@@ -81,6 +81,7 @@ export type AgentsProps = {
   onConfigSave: () => void;
   onModelChange: (agentId: string, modelId: string | null) => void;
   onModelFallbacksChange: (agentId: string, fallbacks: string[]) => void;
+  onOrganizationChange: (agentId: string, organizationId: string | null) => void;
   onChannelsRefresh: () => void;
   onCronRefresh: () => void;
   onSkillsFilterChange: (next: string) => void;
@@ -184,6 +185,7 @@ export function renderAgents(props: AgentsProps) {
                         onConfigSave: props.onConfigSave,
                         onModelChange: props.onModelChange,
                         onModelFallbacksChange: props.onModelFallbacksChange,
+                        onOrganizationChange: props.onOrganizationChange,
                       })
                     : nothing
                 }
@@ -359,6 +361,7 @@ function renderAgentOverview(params: {
   onConfigSave: () => void;
   onModelChange: (agentId: string, modelId: string | null) => void;
   onModelFallbacksChange: (agentId: string, fallbacks: string[]) => void;
+  onOrganizationChange: (agentId: string, organizationId: string | null) => void;
 }) {
   const {
     agent,
@@ -374,8 +377,18 @@ function renderAgentOverview(params: {
     onConfigSave,
     onModelChange,
     onModelFallbacksChange,
+    onOrganizationChange,
   } = params;
   const config = resolveAgentConfig(configForm, agent.id);
+  // Organization: read from config form entry, then agent runtime value.
+  const orgId =
+    (config.entry as { organizationId?: string } | undefined)?.organizationId?.trim() ||
+    (agent as { organizationId?: string }).organizationId?.trim() ||
+    null;
+  // Organizations list from top-level config (nested under organizations.list).
+  type OrgOption = { id: string; name: string };
+  const orgBlock = (configForm as { organizations?: { list?: unknown[] } } | null)?.organizations;
+  const orgOptions = Array.isArray(orgBlock?.list) ? (orgBlock.list as OrgOption[]) : [];
   const workspaceFromFiles =
     agentFilesList && agentFilesList.agentId === agent.id ? agentFilesList.workspace : null;
   const workspace =
@@ -442,6 +455,15 @@ function renderAgentOverview(params: {
           <div class="label">Skills Filter</div>
           <div>${skillFilter ? `${skillCount} selected` : "all skills"}</div>
         </div>
+        <div class="agent-kv">
+          <div class="label">Organization</div>
+          <div>${
+            orgId ??
+            html`
+              <span class="muted">—</span>
+            `
+          }</div>
+        </div>
       </div>
 
       <div class="agent-model-select" style="margin-top: 20px;">
@@ -481,6 +503,33 @@ function renderAgentOverview(params: {
             />
           </label>
         </div>
+        ${
+          orgOptions.length > 0
+            ? html`
+                <div style="margin-top: 12px;">
+                  <label class="field" style="max-width: 360px;">
+                    <span>Organization</span>
+                    <select
+                      .value=${orgId ?? ""}
+                      ?disabled=${!configForm || configLoading || configSaving}
+                      @change=${(e: Event) => {
+                        const val = (e.target as HTMLSelectElement).value;
+                        onOrganizationChange(agent.id, val || null);
+                      }}
+                    >
+                      <option value="">— None (global agent) —</option>
+                      ${orgOptions.map(
+                        (org) =>
+                          html`<option value=${org.id} ?selected=${org.id === orgId}>
+                            ${org.name} (${org.id})
+                          </option>`,
+                      )}
+                    </select>
+                  </label>
+                </div>
+              `
+            : nothing
+        }
         <div class="row" style="justify-content: flex-end; gap: 8px;">
           <button class="btn btn--sm" ?disabled=${configLoading} @click=${onConfigReload}>
             Reload Config

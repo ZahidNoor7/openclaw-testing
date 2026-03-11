@@ -87,6 +87,8 @@ export type AgentConfig = {
   tools?: AgentToolsConfig;
   /** Optional runtime descriptor for this agent. */
   runtime?: AgentRuntimeConfig;
+  /** Optional organization this agent belongs to (multi-tenancy). */
+  organizationId?: string;
 };
 
 export type AgentsConfig = {

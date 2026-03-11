@@ -307,6 +307,15 @@ const entries: SubCliEntry[] = [
       mod.registerCompletionCli(program);
     },
   },
+  {
+    name: "org",
+    description: "Manage organizations (multi-tenancy)",
+    hasSubcommands: true,
+    register: async (program) => {
+      const mod = await import("../org-cli.js");
+      mod.registerOrgCli(program);
+    },
+  },
 ];
 
 export function getSubCliEntries(): SubCliEntry[] {

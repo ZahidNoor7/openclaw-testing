@@ -86,6 +86,7 @@ import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.t
 import { renderInstances } from "./views/instances.ts";
 import { renderLogs } from "./views/logs.ts";
 import { renderNodes } from "./views/nodes.ts";
+import { renderOrganizations } from "./views/organizations.ts";
 import { renderOverview } from "./views/overview.ts";
 import { renderSessions } from "./views/sessions.ts";
 import { renderSkills } from "./views/skills.ts";
@@ -168,11 +169,52 @@ export function renderApp(state: AppViewState) {
   const chatAvatarUrl = state.chatAvatarUrl ?? assistantAvatarUrl ?? null;
   const configValue =
     state.configForm ?? (state.configSnapshot?.config as Record<string, unknown> | null);
+  // Org switcher data — read from snapshot so it's always available without visiting config tab.
+  const _topbarOrgBlock =
+    state.configSnapshot?.config?.organizations != null &&
+    typeof state.configSnapshot.config.organizations === "object"
+      ? (state.configSnapshot.config.organizations as {
+          list?: Array<{ id: string; name: string }>;
+          activeId?: string;
+        })
+      : null;
+  const topbarOrgs = Array.isArray(_topbarOrgBlock?.list)
+    ? (_topbarOrgBlock.list as Array<{ id: string; name: string }>)
+    : [];
+  const topbarActiveOrgId = _topbarOrgBlock?.activeId ?? null;
+
+  // Org-filtered agents list: only show agents belonging to the active org (plus global agents).
+  // Mirrors getAgentsForOrganization() logic from src/config/organizations.ts.
+  // configSnapshot has full agent config including organizationId; agentsList only has runtime rows.
+  const _agentsConfig =
+    (
+      state.configSnapshot?.config?.agents as
+        | { list?: Array<{ id: string; organizationId?: string }> }
+        | undefined
+    )?.list ?? [];
+  const _visibleAgentIds: Set<string> = topbarActiveOrgId
+    ? new Set(
+        _agentsConfig
+          .filter((a) => !a.organizationId || a.organizationId === topbarActiveOrgId)
+          .map((a) => a.id),
+      )
+    : null!; // null signals "show all" — checked below
+  const orgFilteredAgentsList =
+    state.agentsList && topbarActiveOrgId
+      ? {
+          ...state.agentsList,
+          agents: state.agentsList.agents.filter((a) => _visibleAgentIds.has(a.id)),
+          defaultId: _visibleAgentIds.has(state.agentsList.defaultId ?? "")
+            ? state.agentsList.defaultId
+            : (state.agentsList.agents.find((a) => _visibleAgentIds.has(a.id))?.id ?? null),
+        }
+      : state.agentsList;
+
   const basePath = normalizeBasePath(state.basePath ?? "");
   const resolvedAgentId =
     state.agentsSelectedId ??
-    state.agentsList?.defaultId ??
-    state.agentsList?.agents?.[0]?.id ??
+    orgFilteredAgentsList?.defaultId ??
+    orgFilteredAgentsList?.agents?.[0]?.id ??
     null;
   const getCurrentConfigValue = () =>
     state.configForm ?? (state.configSnapshot?.config as Record<string, unknown> | null);
@@ -182,7 +224,7 @@ export function renderApp(state: AppViewState) {
   const cronAgentSuggestions = sortLocaleStrings(
     new Set(
       [
-        ...(state.agentsList?.agents?.map((entry) => entry.id.trim()) ?? []),
+        ...(orgFilteredAgentsList?.agents?.map((entry) => entry.id.trim()) ?? []),
         ...state.cronJobs
           .map((job) => (typeof job.agentId === "string" ? job.agentId.trim() : ""))
           .filter(Boolean),
@@ -234,6 +276,64 @@ export function renderApp(state: AppViewState) {
       : rawDeliveryToSuggestions;
 
   return html`
+    ${
+      state.orgSwitching
+        ? html`<div class="org-switch-overlay" role="status" aria-live="polite">
+          <style>
+            @keyframes org-switch-spin {
+              to { transform: rotate(360deg); }
+            }
+            .org-switch-overlay {
+              position: fixed;
+              inset: 0;
+              background: var(--bg);
+              z-index: 9999;
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              justify-content: center;
+              gap: 20px;
+            }
+            .org-switch-overlay__logo {
+              display: flex;
+              align-items: center;
+              gap: 12px;
+              opacity: 0.9;
+            }
+            .org-switch-overlay__logo img {
+              width: 36px;
+              height: 36px;
+            }
+            .org-switch-overlay__title {
+              font-size: 18px;
+              font-weight: 600;
+              letter-spacing: 0.08em;
+              color: var(--text);
+            }
+            .org-switch-overlay__spinner {
+              width: 28px;
+              height: 28px;
+              border: 2px solid var(--border-strong);
+              border-top-color: var(--accent, var(--text));
+              border-radius: 50%;
+              animation: org-switch-spin 0.7s linear infinite;
+            }
+            .org-switch-overlay__label {
+              font-size: 13px;
+              color: var(--text-muted, var(--text));
+              opacity: 0.6;
+              letter-spacing: 0.02em;
+            }
+          </style>
+          <div class="org-switch-overlay__logo">
+            <img src=${state.basePath ? `${state.basePath}/favicon.svg` : "/favicon.svg"} alt="OpenClaw" />
+            <span class="org-switch-overlay__title">OPENCLAW</span>
+          </div>
+          <div class="org-switch-overlay__spinner"></div>
+          <span class="org-switch-overlay__label">Switching organization…</span>
+        </div>`
+        : nothing
+    }
     <div class="shell ${isChat ? "shell--chat" : ""} ${chatFocus ? "shell--chat-focus" : ""} ${state.settings.navCollapsed ? "shell--nav-collapsed" : ""} ${state.onboarding ? "shell--onboarding" : ""}">
       <header class="topbar">
         <div class="topbar-left">
@@ -270,6 +370,39 @@ export function renderApp(state: AppViewState) {
             <span>${t("common.health")}</span>
             <span class="mono">${state.connected ? t("common.ok") : t("common.offline")}</span>
           </div>
+          ${
+            topbarOrgs.length > 0
+              ? html`<div class="pill">
+                <span style="opacity:0.6;font-size:11px;">org</span>
+                ${
+                  topbarOrgs.length === 1
+                    ? html`<span class="mono" style="font-size:12px;">${topbarOrgs[0].name}</span>`
+                    : html`<select
+                      style="background:transparent;border:none;color:inherit;font-size:12px;font-family:inherit;cursor:pointer;padding:0;"
+                      @change=${async (e: Event) => {
+                        const newId = (e.target as HTMLSelectElement).value;
+                        if (!newId || newId === topbarActiveOrgId) {
+                          return;
+                        }
+                        state.orgSwitching = true;
+                        state.orgSwitchingToId = newId;
+                        if (!state.configForm) {
+                          await loadConfig(state);
+                        }
+                        updateConfigFormValue(state, ["organizations", "activeId"], newId);
+                        await saveConfig(state);
+                        await loadConfig(state);
+                      }}
+                    >
+                      ${topbarOrgs.map(
+                        (org) =>
+                          html`<option value=${org.id} ?selected=${org.id === topbarActiveOrgId}>${org.name}</option>`,
+                      )}
+                    </select>`
+                }
+              </div>`
+              : nothing
+          }
           ${renderThemeToggle(state)}
         </div>
       </header>
@@ -554,7 +687,7 @@ export function renderApp(state: AppViewState) {
             ? renderAgents({
                 loading: state.agentsLoading,
                 error: state.agentsError,
-                agentsList: state.agentsList,
+                agentsList: orgFilteredAgentsList,
                 selectedAgentId: resolvedAgentId,
                 activePanel: state.agentsPanel,
                 configForm: configValue,
@@ -591,11 +724,11 @@ export function renderApp(state: AppViewState) {
                   await loadAgents(state);
                   const nextSelected =
                     state.agentsSelectedId ??
-                    state.agentsList?.defaultId ??
-                    state.agentsList?.agents?.[0]?.id ??
+                    orgFilteredAgentsList?.defaultId ??
+                    orgFilteredAgentsList?.agents?.[0]?.id ??
                     null;
                   await loadToolsCatalog(state, nextSelected);
-                  const agentIds = state.agentsList?.agents?.map((entry) => entry.id) ?? [];
+                  const agentIds = orgFilteredAgentsList?.agents?.map((entry) => entry.id) ?? [];
                   if (agentIds.length > 0) {
                     void loadAgentIdentities(state, agentIds);
                   }
@@ -789,6 +922,18 @@ export function renderApp(state: AppViewState) {
                     updateConfigFormValue(state, basePath, next);
                   } else {
                     updateConfigFormValue(state, basePath, modelId);
+                  }
+                },
+                onOrganizationChange: (agentId, organizationId) => {
+                  const index = ensureAgentIndex(agentId);
+                  if (index < 0) {
+                    return;
+                  }
+                  const basePath = ["agents", "list", index, "organizationId"];
+                  if (!organizationId) {
+                    removeConfigFormValue(state, basePath);
+                  } else {
+                    updateConfigFormValue(state, basePath, organizationId);
                   }
                 },
                 onModelFallbacksChange: (agentId, fallbacks) => {
@@ -1069,6 +1214,169 @@ export function renderApp(state: AppViewState) {
                 onApply: () => applyConfig(state),
                 onUpdate: () => runUpdate(state),
               })
+            : nothing
+        }
+
+        ${
+          state.tab === "organizations"
+            ? (() => {
+                const cfg = state.configSnapshot?.config;
+                const orgBlock =
+                  cfg?.organizations != null && typeof cfg.organizations === "object"
+                    ? (cfg.organizations as { list?: unknown[]; activeId?: string })
+                    : null;
+                type OrgEntry = {
+                  id: string;
+                  name: string;
+                  description?: string;
+                  createdAt?: string;
+                  openaiApiKey?: string;
+                };
+                const orgs = Array.isArray(orgBlock?.list) ? (orgBlock.list as OrgEntry[]) : [];
+                const activeOrgId =
+                  typeof orgBlock?.activeId === "string" ? orgBlock.activeId : null;
+
+                function slugifyOrgName(name: string): string {
+                  return (
+                    "org_" +
+                    name
+                      .toLowerCase()
+                      .replace(/[^a-z0-9]+/g, "_")
+                      .replace(/^_+|_+$/g, "")
+                      .slice(0, 48)
+                  );
+                }
+
+                async function orgSaveWith(patch: Record<string, unknown>, clearCreate = true) {
+                  if (!state.configForm) {
+                    await loadConfig(state);
+                  }
+                  if (!state.configForm) {
+                    state.orgLastError = "Failed to load config.";
+                    return;
+                  }
+                  state.orgSaving = true;
+                  state.orgLastError = null;
+                  try {
+                    Object.assign(state.configForm, patch);
+                    state.configFormDirty = true;
+                    await saveConfig(state);
+                    await loadConfig(state);
+                  } catch (err) {
+                    state.orgLastError = String(err);
+                  } finally {
+                    state.orgSaving = false;
+                    if (clearCreate) {
+                      state.orgCreateName = "";
+                      state.orgCreateId = "";
+                      state.orgCreateDescription = "";
+                      state.orgCreateOpenAiKey = "";
+                    }
+                  }
+                }
+
+                return renderOrganizations({
+                  loading: state.configLoading,
+                  saving: state.orgSaving,
+                  lastError: state.orgLastError,
+                  organizations: orgs,
+                  activeOrganizationId: activeOrgId,
+                  createName: state.orgCreateName,
+                  createId: state.orgCreateId,
+                  createDescription: state.orgCreateDescription,
+                  createOpenAiKey: state.orgCreateOpenAiKey,
+                  editingId: state.orgEditingId,
+                  editName: state.orgEditName,
+                  editDescription: state.orgEditDescription,
+                  editOpenAiKey: state.orgEditOpenAiKey,
+                  onRefresh: () => loadConfig(state),
+                  onCreateNameChange: (val) => (state.orgCreateName = val),
+                  onCreateIdChange: (val) => (state.orgCreateId = val),
+                  onCreateDescriptionChange: (val) => (state.orgCreateDescription = val),
+                  onCreateOpenAiKeyChange: (val) => (state.orgCreateOpenAiKey = val),
+                  onCreate: async () => {
+                    const name = state.orgCreateName.trim();
+                    const id = state.orgCreateId.trim() || slugifyOrgName(name);
+                    if (!name) {
+                      return;
+                    }
+                    if (orgs.some((o) => o.id === id)) {
+                      state.orgLastError = `Organization "${id}" already exists.`;
+                      return;
+                    }
+                    const newOrg: OrgEntry = {
+                      id,
+                      name,
+                      ...(state.orgCreateDescription.trim()
+                        ? { description: state.orgCreateDescription.trim() }
+                        : {}),
+                      ...(state.orgCreateOpenAiKey.trim()
+                        ? { openaiApiKey: state.orgCreateOpenAiKey.trim() }
+                        : {}),
+                      createdAt: new Date().toISOString(),
+                    };
+                    await orgSaveWith({
+                      organizations: { ...orgBlock, list: [...orgs, newOrg] },
+                    });
+                  },
+                  onEditStart: (org) => {
+                    state.orgEditingId = org.id;
+                    state.orgEditName = org.name;
+                    state.orgEditDescription = org.description ?? "";
+                    state.orgEditOpenAiKey = "";
+                  },
+                  onEditCancel: () => {
+                    state.orgEditingId = null;
+                    state.orgEditName = "";
+                    state.orgEditDescription = "";
+                    state.orgEditOpenAiKey = "";
+                  },
+                  onEditNameChange: (val) => (state.orgEditName = val),
+                  onEditDescriptionChange: (val) => (state.orgEditDescription = val),
+                  onEditOpenAiKeyChange: (val) => (state.orgEditOpenAiKey = val),
+                  onUpdate: async () => {
+                    const editId = state.orgEditingId;
+                    if (!editId) {
+                      return;
+                    }
+                    const existingOrg = orgs.find((o) => o.id === editId);
+                    if (!existingOrg) {
+                      return;
+                    }
+                    const updatedOrg: OrgEntry = {
+                      ...existingOrg,
+                      name: state.orgEditName.trim() || existingOrg.name,
+                      description: state.orgEditDescription.trim() || undefined,
+                      // Only update key if user typed a new one; blank = keep existing
+                      ...(state.orgEditOpenAiKey.trim()
+                        ? { openaiApiKey: state.orgEditOpenAiKey.trim() }
+                        : {}),
+                    };
+                    const nextList = orgs.map((o) => (o.id === editId ? updatedOrg : o));
+                    await orgSaveWith({ organizations: { ...orgBlock, list: nextList } }, false);
+                    state.orgEditingId = null;
+                    state.orgEditName = "";
+                    state.orgEditDescription = "";
+                    state.orgEditOpenAiKey = "";
+                  },
+                  onSwitch: (id) => {
+                    state.orgSwitching = true;
+                    state.orgSwitchingToId = id;
+                    return orgSaveWith({ organizations: { ...orgBlock, activeId: id } });
+                  },
+                  onDelete: (id) => {
+                    const nextList = orgs.filter((o) => o.id !== id);
+                    const patch: Record<string, unknown> = {
+                      organizations: {
+                        ...orgBlock,
+                        list: nextList.length > 0 ? nextList : undefined,
+                        activeId: activeOrgId === id ? undefined : activeOrgId,
+                      },
+                    };
+                    return orgSaveWith(patch);
+                  },
+                });
+              })()
             : nothing
         }
 

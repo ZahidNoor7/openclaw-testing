@@ -3,6 +3,7 @@ import {
   type GatewayUpdateAvailableEventPayload,
 } from "../../../src/gateway/events.js";
 import { ConnectErrorDetailCodes } from "../../../src/gateway/protocol/connect-error-details.js";
+import { buildAgentMainSessionKey } from "../../../src/routing/session-key.js";
 import { CHAT_SESSIONS_ACTIVE_MINUTES, flushChatQueueForEvent } from "./app-chat.ts";
 import type { EventLogEntry } from "./app-events.ts";
 import {
@@ -18,6 +19,7 @@ import { loadAgents, loadToolsCatalog } from "./controllers/agents.ts";
 import { loadAssistantIdentity } from "./controllers/assistant-identity.ts";
 import { loadChatHistory } from "./controllers/chat.ts";
 import { handleChatEvent, type ChatEventPayload } from "./controllers/chat.ts";
+import { loadConfig } from "./controllers/config.ts";
 import { loadDevices } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
 import {
@@ -208,10 +210,13 @@ export function connectGateway(host: GatewayHost) {
       if (host.client !== client) {
         return;
       }
+      const wasOrgSwitching = (host as unknown as { orgSwitching: boolean }).orgSwitching;
       host.connected = true;
       host.lastError = null;
       host.lastErrorCode = null;
       host.hello = hello;
+      // Clear org-switch overlay once gateway reconnects.
+      (host as unknown as { orgSwitching: boolean }).orgSwitching = false;
       applySnapshot(host, hello);
       // Reset orphaned chat run state from before disconnect.
       // Any in-flight run's final event was lost during the disconnect window.
@@ -220,11 +225,69 @@ export function connectGateway(host: GatewayHost) {
       (host as unknown as { chatStreamStartedAt: number | null }).chatStreamStartedAt = null;
       resetToolStream(host as unknown as Parameters<typeof resetToolStream>[0]);
       void loadAssistantIdentity(host as unknown as OpenClawApp);
-      void loadAgents(host as unknown as OpenClawApp);
       void loadToolsCatalog(host as unknown as OpenClawApp);
       void loadNodes(host as unknown as OpenClawApp, { quiet: true });
       void loadDevices(host as unknown as OpenClawApp, { quiet: true });
-      void refreshActiveTab(host as unknown as Parameters<typeof refreshActiveTab>[0]);
+      void loadConfig(host as unknown as OpenClawApp);
+      // Capture and clear the target org ID before async work.
+      const switchingToOrgId = (host as unknown as { orgSwitchingToId: string | null })
+        .orgSwitchingToId;
+      (host as unknown as { orgSwitchingToId: string | null }).orgSwitchingToId = null;
+
+      if (wasOrgSwitching) {
+        // After an org switch, load agents and switch the chat session to the
+        // new org's own session so each org has fully isolated chat history.
+        // Clear stale messages immediately so navigating to chat doesn't flash old content.
+        (host as unknown as { chatMessages: unknown[] }).chatMessages = [];
+        (host as unknown as { chatToolMessages: unknown[] }).chatToolMessages = [];
+        void (async () => {
+          await loadAgents(host as unknown as OpenClawApp);
+          const agentsList = (host as unknown as { agentsList: AgentsListResult | null })
+            .agentsList;
+          const agentId = agentsList?.defaultId ?? agentsList?.agents?.[0]?.id ?? "main";
+          // Include the org ID in the session key so each org gets its own isolated chat.
+          // e.g. "agent:main:org:zahid-org" vs "agent:main:org:default"
+          const newSessionKey = buildAgentMainSessionKey({
+            agentId,
+            mainKey: switchingToOrgId ? `org:${switchingToOrgId}` : undefined,
+          });
+          (host as unknown as { sessionKey: string }).sessionKey = newSessionKey;
+          setLastActiveSessionKey(
+            host as unknown as Parameters<typeof setLastActiveSessionKey>[0],
+            newSessionKey,
+          );
+          void refreshActiveTab(host as unknown as Parameters<typeof refreshActiveTab>[0]);
+        })();
+      } else {
+        // On fresh connect, load agents then derive the org-scoped session key so the
+        // right chat is shown immediately without requiring a manual org switch.
+        void (async () => {
+          await loadAgents(host as unknown as OpenClawApp);
+          const cfgOrgs = (
+            host as unknown as { configSnapshot: { config?: Record<string, unknown> } | null }
+          ).configSnapshot?.config?.organizations as { activeId?: string } | undefined;
+          const activeOrgId = cfgOrgs?.activeId?.trim() || null;
+          if (activeOrgId) {
+            const agentsList = (host as unknown as { agentsList: AgentsListResult | null })
+              .agentsList;
+            const agentId = agentsList?.defaultId ?? agentsList?.agents?.[0]?.id ?? "main";
+            const expectedKey = buildAgentMainSessionKey({
+              agentId,
+              mainKey: `org:${activeOrgId}`,
+            });
+            const currentKey = (host as unknown as { sessionKey: string }).sessionKey;
+            // Only update if the current key doesn't already encode an org namespace.
+            if (!currentKey.includes(":org:")) {
+              (host as unknown as { sessionKey: string }).sessionKey = expectedKey;
+              setLastActiveSessionKey(
+                host as unknown as Parameters<typeof setLastActiveSessionKey>[0],
+                expectedKey,
+              );
+            }
+          }
+          void refreshActiveTab(host as unknown as Parameters<typeof refreshActiveTab>[0]);
+        })();
+      }
     },
     onClose: ({ code, reason, error }) => {
       if (host.client !== client) {

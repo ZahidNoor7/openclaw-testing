@@ -28,6 +28,19 @@ import type { SecretsConfig } from "./types.secrets.js";
 import type { SkillsConfig } from "./types.skills.js";
 import type { ToolsConfig } from "./types.tools.js";
 
+export type OrganizationConfig = {
+  /** Unique organization identifier, e.g. "org_acme". */
+  id: string;
+  /** Human-readable display name. */
+  name: string;
+  /** Optional description. */
+  description?: string;
+  /** ISO timestamp when this organization was created. */
+  createdAt?: string;
+  /** Optional org-specific OpenAI API key. */
+  openaiApiKey?: string;
+};
+
 export type OpenClawConfig = {
   meta?: {
     /** Last OpenClaw version that wrote this config. */
@@ -120,6 +133,12 @@ export type OpenClawConfig = {
   talk?: TalkConfig;
   gateway?: GatewayConfig;
   memory?: MemoryConfig;
+  /** Multi-tenancy: organization registry. */
+  organizations?: {
+    list?: OrganizationConfig[];
+    /** ID of the currently active organization. */
+    activeId?: string;
+  };
 };
 
 export type ConfigValidationIssue = {

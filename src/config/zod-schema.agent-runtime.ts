@@ -747,6 +747,8 @@ export const AgentEntrySchema = z
     sandbox: AgentSandboxSchema,
     tools: AgentToolsSchema,
     runtime: AgentRuntimeSchema,
+    /** Optional organization this agent belongs to. */
+    organizationId: z.string().optional(),
   })
   .strict();
 

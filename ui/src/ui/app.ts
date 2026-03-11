@@ -242,6 +242,19 @@ export class OpenClawApp extends LitElement {
   @state() agentSkillsReport: SkillStatusReport | null = null;
   @state() agentSkillsAgentId: string | null = null;
 
+  @state() orgCreateName = "";
+  @state() orgCreateId = "";
+  @state() orgCreateDescription = "";
+  @state() orgCreateOpenAiKey = "";
+  @state() orgSaving = false;
+  @state() orgLastError: string | null = null;
+  @state() orgSwitching = false;
+  @state() orgSwitchingToId: string | null = null;
+  @state() orgEditingId: string | null = null;
+  @state() orgEditName = "";
+  @state() orgEditDescription = "";
+  @state() orgEditOpenAiKey = "";
+
   @state() sessionsLoading = false;
   @state() sessionsResult: SessionsListResult | null = null;
   @state() sessionsError: string | null = null;

@@ -147,6 +147,21 @@ export type AppViewState = {
   agentSkillsError: string | null;
   agentSkillsReport: SkillStatusReport | null;
   agentSkillsAgentId: string | null;
+  /** Multi-tenancy: org form create state */
+  orgCreateName: string;
+  orgCreateId: string;
+  orgCreateDescription: string;
+  orgCreateOpenAiKey: string;
+  orgSaving: boolean;
+  orgLastError: string | null;
+  orgSwitching: boolean;
+  /** The org ID being switched to — set before save, cleared after reconnect. */
+  orgSwitchingToId: string | null;
+  /** Inline edit state */
+  orgEditingId: string | null;
+  orgEditName: string;
+  orgEditDescription: string;
+  orgEditOpenAiKey: string;
   sessionsLoading: boolean;
   sessionsResult: SessionsListResult | null;
   sessionsError: string | null;

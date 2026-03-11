@@ -875,6 +875,26 @@ export const OpenClawSchema = z
       })
       .strict()
       .optional(),
+    /** Multi-tenancy: organization registry with active selection. */
+    organizations: z
+      .object({
+        list: z
+          .array(
+            z
+              .object({
+                id: z.string(),
+                name: z.string(),
+                description: z.string().optional(),
+                createdAt: z.string().optional(),
+                openaiApiKey: z.string().optional().register(sensitive),
+              })
+              .strict(),
+          )
+          .optional(),
+        activeId: z.string().optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((cfg, ctx) => {
