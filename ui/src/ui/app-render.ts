@@ -69,13 +69,14 @@ import { buildExternalLinkRel, EXTERNAL_LINK_TARGET } from "./external-link.ts";
 import { icons } from "./icons.ts";
 import { normalizeBasePath, TAB_GROUPS, subtitleForTab, titleForTab } from "./navigation.ts";
 import {
+  normalizeAgentLabel,
   resolveAgentConfig,
   resolveConfiguredCronModelSuggestions,
   resolveEffectiveModelFallbacks,
   resolveModelPrimary,
   sortLocaleStrings,
 } from "./views/agents-utils.ts";
-import { renderAgents } from "./views/agents.ts";
+import { renderAgents, slugifyAgentId } from "./views/agents.ts";
 import { renderChannels } from "./views/channels.ts";
 import { renderChat } from "./views/chat.ts";
 import { renderConfig } from "./views/config.ts";
@@ -161,7 +162,6 @@ export function renderApp(state: AppViewState) {
   const presenceCount = state.presenceEntries.length;
   const sessionsCount = state.sessionsResult?.count ?? null;
   const cronNext = state.cronStatus?.nextWakeAtMs ?? null;
-  const chatDisabledReason = state.connected ? null : t("chat.disconnected");
   const isChat = state.tab === "chat";
   const chatFocus = isChat && (state.settings.chatFocusMode || state.onboarding);
   const showThinking = state.onboarding ? false : state.settings.chatShowThinking;
@@ -174,7 +174,7 @@ export function renderApp(state: AppViewState) {
     state.configSnapshot?.config?.organizations != null &&
     typeof state.configSnapshot.config.organizations === "object"
       ? (state.configSnapshot.config.organizations as {
-          list?: Array<{ id: string; name: string }>;
+          list?: Array<{ id: string; name: string; openaiApiKey?: string }>;
           activeId?: string;
         })
       : null;
@@ -182,10 +182,21 @@ export function renderApp(state: AppViewState) {
     ? (_topbarOrgBlock.list as Array<{ id: string; name: string }>)
     : [];
   const topbarActiveOrgId = _topbarOrgBlock?.activeId ?? null;
+  // API key isolation: when an org is active and has no openaiApiKey, block chat.
+  const _activeOrgFull = topbarActiveOrgId
+    ? (_topbarOrgBlock?.list ?? []).find((o) => o.id === topbarActiveOrgId)
+    : null;
+  const orgMissingApiKey = _activeOrgFull !== undefined && !_activeOrgFull?.openaiApiKey?.trim();
+  const chatDisabledReason = !state.connected
+    ? t("chat.disconnected")
+    : orgMissingApiKey
+      ? "Add an OpenAI API key for this organization in Settings → Organizations before chatting."
+      : null;
 
-  // Org-filtered agents list: only show agents belonging to the active org (plus global agents).
-  // Mirrors getAgentsForOrganization() logic from src/config/organizations.ts.
-  // configSnapshot has full agent config including organizationId; agentsList only has runtime rows.
+  // Org-filtered agents list: strict isolation — only show agents explicitly assigned
+  // to the active org.  Global agents (no organizationId) are only visible when no
+  // org is active (single-user mode).  configSnapshot has the full agent config
+  // including organizationId; agentsList only has runtime rows.
   const _agentsConfig =
     (
       state.configSnapshot?.config?.agents as
@@ -193,11 +204,7 @@ export function renderApp(state: AppViewState) {
         | undefined
     )?.list ?? [];
   const _visibleAgentIds: Set<string> = topbarActiveOrgId
-    ? new Set(
-        _agentsConfig
-          .filter((a) => !a.organizationId || a.organizationId === topbarActiveOrgId)
-          .map((a) => a.id),
-      )
+    ? new Set(_agentsConfig.filter((a) => a.organizationId === topbarActiveOrgId).map((a) => a.id))
     : null!; // null signals "show all" — checked below
   const orgFilteredAgentsList =
     state.agentsList && topbarActiveOrgId
@@ -205,8 +212,8 @@ export function renderApp(state: AppViewState) {
           ...state.agentsList,
           agents: state.agentsList.agents.filter((a) => _visibleAgentIds.has(a.id)),
           defaultId: _visibleAgentIds.has(state.agentsList.defaultId ?? "")
-            ? state.agentsList.defaultId
-            : (state.agentsList.agents.find((a) => _visibleAgentIds.has(a.id))?.id ?? null),
+            ? (state.agentsList.defaultId ?? "")
+            : (state.agentsList.agents.find((a) => _visibleAgentIds.has(a.id))?.id ?? ""),
         }
       : state.agentsList;
 
@@ -334,6 +341,97 @@ export function renderApp(state: AppViewState) {
         </div>`
         : nothing
     }
+    ${
+      state.orgSwitchPending
+        ? html`<div class="org-confirm-backdrop" role="dialog" aria-modal="true" aria-label="Switch organization">
+          <style>
+            .org-confirm-backdrop {
+              position: fixed;
+              inset: 0;
+              background: rgba(0,0,0,0.45);
+              z-index: 9998;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+            }
+            .org-confirm-dialog {
+              background: var(--bg);
+              border: 1px solid var(--border-strong);
+              border-radius: 10px;
+              padding: 28px 32px;
+              max-width: 380px;
+              width: 90%;
+              display: flex;
+              flex-direction: column;
+              gap: 14px;
+              box-shadow: 0 8px 32px rgba(0,0,0,0.28);
+            }
+            .org-confirm-dialog__title {
+              font-size: 16px;
+              font-weight: 600;
+              color: var(--text);
+              margin: 0;
+            }
+            .org-confirm-dialog__body {
+              font-size: 13px;
+              color: var(--text-muted, var(--text));
+              line-height: 1.5;
+              opacity: 0.8;
+            }
+            .org-confirm-dialog__org-name {
+              font-weight: 600;
+              color: var(--text);
+              opacity: 1;
+            }
+            .org-confirm-dialog__actions {
+              display: flex;
+              gap: 10px;
+              justify-content: flex-end;
+              margin-top: 4px;
+            }
+          </style>
+          <div class="org-confirm-dialog">
+            <p class="org-confirm-dialog__title">Switch organization?</p>
+            <p class="org-confirm-dialog__body">
+              Switching to
+              <span class="org-confirm-dialog__org-name">${state.orgSwitchPending.name}</span>
+              will reload your agents and chat history.
+            </p>
+            <div class="org-confirm-dialog__actions">
+              <button
+                class="btn btn--sm"
+                @click=${() => {
+                  state.orgSwitchPending = null;
+                }}
+              >Cancel</button>
+              <button
+                class="btn btn--sm btn--primary"
+                @click=${async () => {
+                  const pending = state.orgSwitchPending;
+                  if (!pending) {
+                    return;
+                  }
+                  state.orgSwitchPending = null;
+                  state.orgSwitching = true;
+                  state.orgSwitchingToId = pending.id;
+                  // Clear chat immediately so the previous org's history never shows
+                  // during the gateway-restart window (onHello also clears, but this
+                  // is earlier and covers the disconnect gap).
+                  state.chatMessages = [];
+                  state.chatToolMessages = [];
+                  if (!state.configForm) {
+                    await loadConfig(state);
+                  }
+                  updateConfigFormValue(state, ["organizations", "activeId"], pending.id);
+                  await saveConfig(state);
+                  await loadConfig(state);
+                }}
+              >Switch</button>
+            </div>
+          </div>
+        </div>`
+        : nothing
+    }
     <div class="shell ${isChat ? "shell--chat" : ""} ${chatFocus ? "shell--chat-focus" : ""} ${state.settings.navCollapsed ? "shell--nav-collapsed" : ""} ${state.onboarding ? "shell--onboarding" : ""}">
       <header class="topbar">
         <div class="topbar-left">
@@ -379,25 +477,17 @@ export function renderApp(state: AppViewState) {
                     ? html`<span class="mono" style="font-size:12px;">${topbarOrgs[0].name}</span>`
                     : html`<select
                       style="background:transparent;border:none;color:inherit;font-size:12px;font-family:inherit;cursor:pointer;padding:0;"
-                      @change=${async (e: Event) => {
+                      .value=${topbarActiveOrgId ?? ""}
+                      @change=${(e: Event) => {
                         const newId = (e.target as HTMLSelectElement).value;
                         if (!newId || newId === topbarActiveOrgId) {
                           return;
                         }
-                        state.orgSwitching = true;
-                        state.orgSwitchingToId = newId;
-                        if (!state.configForm) {
-                          await loadConfig(state);
-                        }
-                        updateConfigFormValue(state, ["organizations", "activeId"], newId);
-                        await saveConfig(state);
-                        await loadConfig(state);
+                        const orgName = topbarOrgs.find((o) => o.id === newId)?.name ?? newId;
+                        state.orgSwitchPending = { id: newId, name: orgName };
                       }}
                     >
-                      ${topbarOrgs.map(
-                        (org) =>
-                          html`<option value=${org.id} ?selected=${org.id === topbarActiveOrgId}>${org.name}</option>`,
-                      )}
+                      ${topbarOrgs.map((org) => html`<option value=${org.id}>${org.name}</option>`)}
                     </select>`
                 }
               </div>`
@@ -720,6 +810,170 @@ export function renderApp(state: AppViewState) {
                 toolsCatalogError: state.toolsCatalogError,
                 toolsCatalogResult: state.toolsCatalogResult,
                 skillsFilter: state.skillsFilter,
+                agentCreateOpen: state.agentCreateOpen,
+                agentCreateName: state.agentCreateName,
+                agentCreateId: state.agentCreateId,
+                agentCreateSaving: state.agentCreateSaving,
+                agentCreateError: state.agentCreateError,
+                onCreateOpen: () => {
+                  state.agentCreateOpen = true;
+                  state.agentCreateError = null;
+                },
+                onCreateCancel: () => {
+                  state.agentCreateOpen = false;
+                  state.agentCreateName = "";
+                  state.agentCreateId = "";
+                  state.agentCreateError = null;
+                },
+                onCreateNameChange: (val) => {
+                  // Auto-fill ID when it still matches the slug of the previous name.
+                  const prevSlug = slugifyAgentId(state.agentCreateName);
+                  state.agentCreateName = val;
+                  if (!state.agentCreateId.trim() || state.agentCreateId === prevSlug) {
+                    state.agentCreateId = slugifyAgentId(val);
+                  }
+                },
+                onCreateIdChange: (val) => {
+                  state.agentCreateId = val;
+                },
+                onCreate: async () => {
+                  const id = state.agentCreateId.trim();
+                  const name = state.agentCreateName.trim();
+                  if (!id) {
+                    state.agentCreateError = "Agent ID is required.";
+                    return;
+                  }
+                  if (!/^[a-z0-9_-]+$/.test(id)) {
+                    state.agentCreateError =
+                      "Agent ID may only contain lowercase letters, digits, underscores, and hyphens.";
+                    return;
+                  }
+                  // Ensure config is loaded.
+                  if (!state.configForm) {
+                    await loadConfig(state);
+                  }
+                  const config = getCurrentConfigValue();
+                  if (findAgentConfigEntryIndex(config, id) >= 0) {
+                    state.agentCreateError = `Agent "${id}" already exists.`;
+                    return;
+                  }
+                  state.agentCreateSaving = true;
+                  state.agentCreateError = null;
+                  try {
+                    const list = (config as { agents?: { list?: unknown[] } } | null)?.agents?.list;
+                    const nextIndex = Array.isArray(list) ? list.length : 0;
+                    const entry: Record<string, unknown> = { id };
+                    if (name) {
+                      entry["name"] = name;
+                    }
+                    // Assign to active org so the agent is visible under that org's filter.
+                    if (topbarActiveOrgId) {
+                      entry["organizationId"] = topbarActiveOrgId;
+                    }
+                    updateConfigFormValue(state, ["agents", "list", nextIndex], entry);
+                    await saveAgentsConfig(state);
+                    state.agentsSelectedId = id;
+                    state.agentCreateOpen = false;
+                    state.agentCreateName = "";
+                    state.agentCreateId = "";
+                  } catch (err) {
+                    state.agentCreateError = String(err);
+                  } finally {
+                    state.agentCreateSaving = false;
+                  }
+                },
+                agentEditOpen: state.agentEditOpen,
+                agentEditName: state.agentEditName,
+                agentEditSaving: state.agentEditSaving,
+                agentEditError: state.agentEditError,
+                onEditOpen: () => {
+                  const agent = orgFilteredAgentsList?.agents?.find(
+                    (a) => a.id === resolvedAgentId,
+                  );
+                  state.agentEditName = agent
+                    ? normalizeAgentLabel(agent)
+                    : (resolvedAgentId ?? "");
+                  state.agentEditOpen = true;
+                  state.agentEditError = null;
+                  state.agentDeleteConfirming = false;
+                },
+                onEditCancel: () => {
+                  state.agentEditOpen = false;
+                  state.agentEditName = "";
+                  state.agentEditError = null;
+                },
+                onEditNameChange: (val) => {
+                  state.agentEditName = val;
+                },
+                onEditSave: async () => {
+                  const agentId = resolvedAgentId;
+                  const name = state.agentEditName.trim();
+                  if (!agentId || !name) {
+                    state.agentEditError = "Name cannot be empty.";
+                    return;
+                  }
+                  const index = findAgentIndex(agentId);
+                  if (index < 0) {
+                    state.agentEditError = "Agent not found in config.";
+                    return;
+                  }
+                  state.agentEditSaving = true;
+                  state.agentEditError = null;
+                  try {
+                    updateConfigFormValue(state, ["agents", "list", index, "name"], name);
+                    await saveAgentsConfig(state);
+                    state.agentEditOpen = false;
+                    state.agentEditName = "";
+                  } catch (err) {
+                    state.agentEditError = String(err);
+                  } finally {
+                    state.agentEditSaving = false;
+                  }
+                },
+                agentDeleteConfirming: state.agentDeleteConfirming,
+                agentDeleteSaving: state.agentDeleteSaving,
+                onDeleteOpen: () => {
+                  state.agentDeleteConfirming = true;
+                  state.agentEditOpen = false;
+                },
+                onDeleteCancel: () => {
+                  state.agentDeleteConfirming = false;
+                },
+                onDeleteConfirm: async () => {
+                  const agentId = resolvedAgentId;
+                  if (!agentId) {
+                    return;
+                  }
+                  if (!state.configForm) {
+                    await loadConfig(state);
+                  }
+                  const list = (getCurrentConfigValue() as { agents?: { list?: unknown[] } } | null)
+                    ?.agents?.list;
+                  if (!Array.isArray(list)) {
+                    return;
+                  }
+                  const filtered = list.filter(
+                    (e) =>
+                      !(
+                        e &&
+                        typeof e === "object" &&
+                        "id" in e &&
+                        (e as { id?: string }).id === agentId
+                      ),
+                  );
+                  state.agentDeleteSaving = true;
+                  try {
+                    updateConfigFormValue(state, ["agents", "list"], filtered);
+                    await saveAgentsConfig(state);
+                    state.agentDeleteConfirming = false;
+                    state.agentsSelectedId = null;
+                  } catch {
+                    // restore and surface error by keeping confirming state open
+                    state.agentDeleteConfirming = true;
+                  } finally {
+                    state.agentDeleteSaving = false;
+                  }
+                },
                 onRefresh: async () => {
                   await loadAgents(state);
                   const nextSelected =
@@ -738,6 +992,10 @@ export function renderApp(state: AppViewState) {
                     return;
                   }
                   state.agentsSelectedId = agentId;
+                  state.agentEditOpen = false;
+                  state.agentEditName = "";
+                  state.agentEditError = null;
+                  state.agentDeleteConfirming = false;
                   state.agentFilesList = null;
                   state.agentFilesError = null;
                   state.agentFilesLoading = false;
@@ -1360,9 +1618,8 @@ export function renderApp(state: AppViewState) {
                     state.orgEditOpenAiKey = "";
                   },
                   onSwitch: (id) => {
-                    state.orgSwitching = true;
-                    state.orgSwitchingToId = id;
-                    return orgSaveWith({ organizations: { ...orgBlock, activeId: id } });
+                    const orgName = orgs.find((o) => o.id === id)?.name ?? id;
+                    state.orgSwitchPending = { id, name: orgName };
                   },
                   onDelete: (id) => {
                     const nextList = orgs.filter((o) => o.id !== id);

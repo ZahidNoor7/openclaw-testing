@@ -1,6 +1,6 @@
 /**
- * Multi-tenancy helpers: organization-aware agent filtering and session
- * namespace resolution.
+ * Multi-tenancy helpers: organization-aware agent filtering, session
+ * namespace resolution, and per-org model configuration.
  *
  * Design: organizations are stored under `organizations.list[]` in
  * openclaw.json.  The currently-active org is set via `organizations.activeId`.
@@ -9,6 +9,7 @@
  * every org context (and in single-user / no-org mode).
  */
 
+import type { ModelProviderConfig } from "./types.models.js";
 import type { OpenClawConfig, OrganizationConfig } from "./types.openclaw.js";
 
 export type { OrganizationConfig };
@@ -72,6 +73,39 @@ export function getAgentsForActiveOrganization(
   config: OpenClawConfig,
 ): NonNullable<NonNullable<OpenClawConfig["agents"]>["list"]> {
   return getAgentsForOrganization(config, config.organizations?.activeId?.trim());
+}
+
+/**
+ * Return a copy of `config` with the active organization's OpenAI API key
+ * merged into `models.providers.openai.apiKey`, if the active org has one.
+ *
+ * Call this after secrets are resolved but before model auth is read so that
+ * org-specific keys take precedence over any global provider key.  When no
+ * active org or the org has no key, returns the original config unchanged.
+ */
+export function applyActiveOrgApiKey(config: OpenClawConfig): OpenClawConfig {
+  const org = getActiveOrganization(config);
+  const key = org?.openaiApiKey?.trim();
+  if (!key) {
+    return config;
+  }
+  const existingOpenAI = config.models?.providers?.["openai"];
+  // Build the merged provider entry.  An explicit ModelProviderConfig annotation
+  // ensures `models: []` satisfies the required array field even when there is
+  // no existing entry to spread from.
+  const mergedOpenAI: ModelProviderConfig = existingOpenAI
+    ? { ...existingOpenAI, apiKey: key }
+    : { baseUrl: "https://api.openai.com/v1", models: [], apiKey: key };
+  return {
+    ...config,
+    models: {
+      ...config.models,
+      providers: {
+        ...config.models?.providers,
+        openai: mergedOpenAI,
+      },
+    },
+  };
 }
 
 /**

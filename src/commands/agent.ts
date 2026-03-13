@@ -67,6 +67,7 @@ import {
   readConfigFileSnapshotForWrite,
   setRuntimeConfigSnapshot,
 } from "../config/config.js";
+import { applyActiveOrgApiKey } from "../config/organizations.js";
 import {
   mergeSessionEntry,
   resolveAgentIdFromSessionKey,
@@ -526,11 +527,16 @@ async function prepareAgentCommandExecution(
     }
     return loadedRaw;
   })();
-  const { resolvedConfig: cfg, diagnostics } = await resolveCommandSecretRefsViaGateway({
-    config: loadedRaw,
-    commandName: "agent",
-    targetIds: getAgentRuntimeCommandSecretTargetIds(),
-  });
+  const { resolvedConfig: _resolvedConfig, diagnostics } = await resolveCommandSecretRefsViaGateway(
+    {
+      config: loadedRaw,
+      commandName: "agent",
+      targetIds: getAgentRuntimeCommandSecretTargetIds(),
+    },
+  );
+  // Apply the active org's OpenAI key on top of global provider config so
+  // org-specific keys take precedence during this agent run.
+  const cfg = applyActiveOrgApiKey(_resolvedConfig);
   setRuntimeConfigSnapshot(cfg, sourceConfig);
   const normalizedSpawned = normalizeSpawnedRunMetadata({
     spawnedBy: opts.spawnedBy,

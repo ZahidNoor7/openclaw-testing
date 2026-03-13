@@ -12,6 +12,7 @@ import urllib.request
 from collections.abc import Callable
 from html import escape as html_escape
 from pathlib import Path
+from typing import Optional
 
 
 def slugify(text: str) -> str:
@@ -85,7 +86,7 @@ def normalize_optional_flag(
     allowed: set[str],
     allowed_text: str,
     unsupported_message: str,
-    aliases: dict[str, str] | None = None,
+    aliases: Optional[dict[str, str]] = None,
 ) -> str:
     """Normalize a string flag, warn when unsupported, and reject invalid values."""
     value = raw_value.strip().lower()

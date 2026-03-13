@@ -147,6 +147,19 @@ export type AppViewState = {
   agentSkillsError: string | null;
   agentSkillsReport: SkillStatusReport | null;
   agentSkillsAgentId: string | null;
+  /** Agent create form state */
+  agentCreateOpen: boolean;
+  agentCreateName: string;
+  agentCreateId: string;
+  agentCreateSaving: boolean;
+  agentCreateError: string | null;
+  /** Agent rename/delete state */
+  agentEditOpen: boolean;
+  agentEditName: string;
+  agentEditSaving: boolean;
+  agentEditError: string | null;
+  agentDeleteConfirming: boolean;
+  agentDeleteSaving: boolean;
   /** Multi-tenancy: org form create state */
   orgCreateName: string;
   orgCreateId: string;
@@ -157,6 +170,8 @@ export type AppViewState = {
   orgSwitching: boolean;
   /** The org ID being switched to — set before save, cleared after reconnect. */
   orgSwitchingToId: string | null;
+  /** Pending org switch awaiting user confirmation — cleared on confirm or cancel. */
+  orgSwitchPending: { id: string; name: string } | null;
   /** Inline edit state */
   orgEditingId: string | null;
   orgEditName: string;

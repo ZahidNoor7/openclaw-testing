@@ -17,6 +17,8 @@ import {
   listOrganizations,
 } from "../config/organizations.js";
 import type { OrganizationConfig } from "../config/organizations.js";
+import { appendOrgAuditEntry } from "../infra/org-audit.js";
+import { orgRateLimiter } from "../infra/org-rate-limit.js";
 import type { RuntimeEnv } from "../runtime.js";
 import { defaultRuntime } from "../runtime.js";
 import { requireValidConfig } from "./agents.command-shared.js";
@@ -138,6 +140,15 @@ export async function orgCreateCommand(
     return;
   }
 
+  // Rate-limit org creation to prevent rapid creation loops.
+  const rlCreate = orgRateLimiter.check("__global__");
+  if (!rlCreate.allowed) {
+    runtime.error(`Rate limit exceeded. Retry in ${Math.ceil(rlCreate.retryAfterMs / 1000)}s.`);
+    runtime.exit(1);
+    return;
+  }
+  orgRateLimiter.record("__global__");
+
   const newOrg: OrganizationConfig = {
     id,
     name,
@@ -155,6 +166,8 @@ export async function orgCreateCommand(
   };
 
   await writeConfigFile(nextConfig);
+  void appendOrgAuditEntry({ event: "org.create", orgId: id, details: { name } });
+
   if (!opts.json) {
     logConfigUpdated(runtime);
     runtime.log(`Created organization "${id}" (${name}).`);
@@ -193,6 +206,18 @@ export async function orgSwitchCommand(
     return;
   }
 
+  // Rate-limit per-org to prevent rapid thrashing.
+  const rl = orgRateLimiter.check(orgId);
+  if (!rl.allowed) {
+    runtime.error(
+      `Rate limit exceeded for org "${orgId}". Retry in ${Math.ceil(rl.retryAfterMs / 1000)}s.`,
+    );
+    runtime.exit(1);
+    return;
+  }
+  orgRateLimiter.record(orgId);
+
+  const previousOrgId = cfg.organizations?.activeId?.trim() ?? null;
   const nextConfig = {
     ...cfg,
     organizations: {
@@ -201,6 +226,11 @@ export async function orgSwitchCommand(
     },
   };
   await writeConfigFile(nextConfig);
+  void appendOrgAuditEntry({
+    event: "org.switch",
+    orgId,
+    details: { previousOrgId, name: org.name },
+  });
 
   if (!opts.json) {
     logConfigUpdated(runtime);
@@ -275,6 +305,7 @@ export async function orgDeleteCommand(
   };
 
   await writeConfigFile(nextConfig);
+  void appendOrgAuditEntry({ event: "org.delete", orgId, details: { name: org.name } });
 
   if (!opts.json) {
     logConfigUpdated(runtime);

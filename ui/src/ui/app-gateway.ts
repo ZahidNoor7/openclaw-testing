@@ -276,8 +276,12 @@ export function connectGateway(host: GatewayHost) {
               mainKey: `org:${activeOrgId}`,
             });
             const currentKey = (host as unknown as { sessionKey: string }).sessionKey;
-            // Only update if the current key doesn't already encode an org namespace.
-            if (!currentKey.includes(":org:")) {
+            // Update whenever the expected key differs — covers both initial load and
+            // cross-org reconnects where both keys already contain ":org:".
+            if (currentKey !== expectedKey) {
+              // Clear stale messages so the wrong org's history never flashes.
+              (host as unknown as { chatMessages: unknown[] }).chatMessages = [];
+              (host as unknown as { chatToolMessages: unknown[] }).chatToolMessages = [];
               (host as unknown as { sessionKey: string }).sessionKey = expectedKey;
               setLastActiveSessionKey(
                 host as unknown as Parameters<typeof setLastActiveSessionKey>[0],

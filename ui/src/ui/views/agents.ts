@@ -89,7 +89,43 @@ export type AgentsProps = {
   onAgentSkillToggle: (agentId: string, skillName: string, enabled: boolean) => void;
   onAgentSkillsClear: (agentId: string) => void;
   onAgentSkillsDisableAll: (agentId: string) => void;
+  /** Create agent form */
+  agentCreateOpen: boolean;
+  agentCreateName: string;
+  agentCreateId: string;
+  agentCreateSaving: boolean;
+  agentCreateError: string | null;
+  onCreateOpen: () => void;
+  onCreateCancel: () => void;
+  onCreateNameChange: (val: string) => void;
+  onCreateIdChange: (val: string) => void;
+  onCreate: () => void;
+  /** Edit (rename) agent */
+  agentEditOpen: boolean;
+  agentEditName: string;
+  agentEditSaving: boolean;
+  agentEditError: string | null;
+  onEditOpen: () => void;
+  onEditCancel: () => void;
+  onEditNameChange: (val: string) => void;
+  onEditSave: () => void;
+  /** Delete agent */
+  agentDeleteConfirming: boolean;
+  agentDeleteSaving: boolean;
+  onDeleteOpen: () => void;
+  onDeleteCancel: () => void;
+  onDeleteConfirm: () => void;
 };
+
+export function slugifyAgentId(name: string): string {
+  return (
+    name
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .slice(0, 48) || "agent"
+  );
+}
 
 export type AgentContext = {
   workspace: string;
@@ -116,13 +152,85 @@ export function renderAgents(props: AgentsProps) {
             <div class="card-title">Agents</div>
             <div class="card-sub">${agents.length} configured.</div>
           </div>
-          <button class="btn btn--sm" ?disabled=${props.loading} @click=${props.onRefresh}>
-            ${props.loading ? "Loading…" : "Refresh"}
-          </button>
+          <div class="row" style="gap: 6px;">
+            <button
+              class="btn btn--sm primary"
+              ?disabled=${props.loading || props.agentCreateSaving}
+              @click=${props.onCreateOpen}
+              title="Create a new agent"
+            >+ New</button>
+            <button class="btn btn--sm" ?disabled=${props.loading} @click=${props.onRefresh}>
+              ${props.loading ? "Loading…" : "Refresh"}
+            </button>
+          </div>
         </div>
         ${
           props.error
             ? html`<div class="callout danger" style="margin-top: 12px;">${props.error}</div>`
+            : nothing
+        }
+        ${
+          props.agentCreateOpen
+            ? html`
+                <div class="agent-create-form" style="margin-top: 12px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius, 8px); background: var(--card-alt, var(--bg-subtle, var(--input-bg, rgba(0,0,0,0.03))));">
+                  <div style="font-size: 13px; font-weight: 600; margin-bottom: 10px;">New Agent</div>
+                  ${
+                    props.agentCreateError
+                      ? html`<div class="callout danger" style="margin-bottom: 8px; font-size: 12px;">${props.agentCreateError}</div>`
+                      : nothing
+                  }
+                  <label class="field" style="margin-bottom: 8px;">
+                    <span style="font-size: 12px;">Display name</span>
+                    <input
+                      type="text"
+                      placeholder="My Agent"
+                      .value=${props.agentCreateName}
+                      ?disabled=${props.agentCreateSaving}
+                      @input=${(e: Event) => props.onCreateNameChange((e.target as HTMLInputElement).value)}
+                      @keydown=${(e: KeyboardEvent) => {
+                        if (e.key === "Enter") {
+                          props.onCreate();
+                        }
+                        if (e.key === "Escape") {
+                          props.onCreateCancel();
+                        }
+                      }}
+                      style="font-size: 13px;"
+                    />
+                  </label>
+                  <label class="field" style="margin-bottom: 10px;">
+                    <span style="font-size: 12px;">Agent ID <span class="muted">(unique, lowercase)</span></span>
+                    <input
+                      type="text"
+                      placeholder="my_agent"
+                      .value=${props.agentCreateId}
+                      ?disabled=${props.agentCreateSaving}
+                      @input=${(e: Event) => props.onCreateIdChange((e.target as HTMLInputElement).value)}
+                      @keydown=${(e: KeyboardEvent) => {
+                        if (e.key === "Enter") {
+                          props.onCreate();
+                        }
+                        if (e.key === "Escape") {
+                          props.onCreateCancel();
+                        }
+                      }}
+                      style="font-size: 13px; font-family: var(--font-mono, monospace);"
+                    />
+                  </label>
+                  <div class="row" style="gap: 6px; justify-content: flex-end;">
+                    <button
+                      class="btn btn--sm"
+                      ?disabled=${props.agentCreateSaving}
+                      @click=${props.onCreateCancel}
+                    >Cancel</button>
+                    <button
+                      class="btn btn--sm primary"
+                      ?disabled=${props.agentCreateSaving || !props.agentCreateId.trim()}
+                      @click=${props.onCreate}
+                    >${props.agentCreateSaving ? "Creating…" : "Create"}</button>
+                  </div>
+                </div>
+              `
             : nothing
         }
         <div class="agent-list" style="margin-top: 12px;">
@@ -166,7 +274,73 @@ export function renderAgents(props: AgentsProps) {
                   selectedAgent,
                   defaultId,
                   props.agentIdentityById[selectedAgent.id] ?? null,
+                  {
+                    onEditOpen: props.onEditOpen,
+                    onDeleteOpen: props.onDeleteOpen,
+                  },
                 )}
+                ${
+                  props.agentEditOpen
+                    ? html`
+                        <section class="card" style="padding: 16px;">
+                          <div style="font-size: 13px; font-weight: 600; margin-bottom: 10px;">Rename Agent</div>
+                          ${
+                            props.agentEditError
+                              ? html`<div class="callout danger" style="margin-bottom: 8px; font-size: 12px;">${props.agentEditError}</div>`
+                              : nothing
+                          }
+                          <label class="field" style="margin-bottom: 10px;">
+                            <span style="font-size: 12px;">Display name</span>
+                            <input
+                              type="text"
+                              .value=${props.agentEditName}
+                              ?disabled=${props.agentEditSaving}
+                              @input=${(e: Event) => props.onEditNameChange((e.target as HTMLInputElement).value)}
+                              @keydown=${(e: KeyboardEvent) => {
+                                if (e.key === "Enter") {
+                                  props.onEditSave();
+                                }
+                                if (e.key === "Escape") {
+                                  props.onEditCancel();
+                                }
+                              }}
+                              style="font-size: 13px;"
+                            />
+                          </label>
+                          <div class="row" style="gap: 6px; justify-content: flex-end;">
+                            <button class="btn btn--sm" ?disabled=${props.agentEditSaving} @click=${props.onEditCancel}>Cancel</button>
+                            <button
+                              class="btn btn--sm primary"
+                              ?disabled=${props.agentEditSaving || !props.agentEditName.trim()}
+                              @click=${props.onEditSave}
+                            >${props.agentEditSaving ? "Saving…" : "Save"}</button>
+                          </div>
+                        </section>
+                      `
+                    : nothing
+                }
+                ${
+                  props.agentDeleteConfirming
+                    ? html`
+                        <section class="card" style="padding: 14px 16px; border-color: var(--danger, #e53e3e);">
+                          <div class="row" style="gap: 12px; align-items: center; flex-wrap: wrap;">
+                            <div style="flex: 1; min-width: 0;">
+                              <div style="font-size: 13px; font-weight: 600; color: var(--danger, #e53e3e);">Delete agent "${selectedAgent.id}"?</div>
+                              <div class="muted" style="font-size: 12px; margin-top: 2px;">This removes the agent from your config. Sessions and files on disk are not deleted.</div>
+                            </div>
+                            <div class="row" style="gap: 6px;">
+                              <button class="btn btn--sm" ?disabled=${props.agentDeleteSaving} @click=${props.onDeleteCancel}>Cancel</button>
+                              <button
+                                class="btn btn--sm danger"
+                                ?disabled=${props.agentDeleteSaving}
+                                @click=${props.onDeleteConfirm}
+                              >${props.agentDeleteSaving ? "Deleting…" : "Delete"}</button>
+                            </div>
+                          </div>
+                        </section>
+                      `
+                    : nothing
+                }
                 ${renderAgentTabs(props.activePanel, (panel) => props.onSelectPanel(panel))}
                 ${
                   props.activePanel === "overview"
@@ -298,6 +472,7 @@ function renderAgentHeader(
   agent: AgentsListResult["agents"][number],
   defaultId: string | null,
   agentIdentity: AgentIdentityResult | null,
+  actions: { onEditOpen: () => void; onDeleteOpen: () => void },
 ) {
   const badge = agentBadgeText(agent.id, defaultId);
   const displayName = normalizeAgentLabel(agent);
@@ -315,6 +490,18 @@ function renderAgentHeader(
       <div class="agent-header-meta">
         <div class="mono">${agent.id}</div>
         ${badge ? html`<span class="agent-pill">${badge}</span>` : nothing}
+        <div class="row" style="gap: 6px; margin-top: 4px;">
+          <button
+            class="btn btn--sm"
+            @click=${actions.onEditOpen}
+            title="Rename agent"
+          >Rename</button>
+          <button
+            class="btn btn--sm danger"
+            @click=${actions.onDeleteOpen}
+            title="Delete agent"
+          >Delete</button>
+        </div>
       </div>
     </section>
   `;
