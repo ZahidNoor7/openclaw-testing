@@ -1,6 +1,7 @@
 import { html, nothing } from "lit";
 import { unsafeHTML } from "lit/directives/unsafe-html.js";
 import type { AssistantIdentity } from "../assistant-identity.ts";
+import { icons } from "../icons.ts";
 import { toSanitizedMarkdownHtml } from "../markdown.ts";
 import { openExternalUrlSafe } from "../open-external-url.ts";
 import { detectTextDirection } from "../text-direction.ts";
@@ -18,6 +19,34 @@ type ImageBlock = {
   url: string;
   alt?: string;
 };
+
+type DocumentBlock = {
+  fileName: string;
+  mimeType: string;
+};
+
+function extractDocumentBlocks(message: unknown): DocumentBlock[] {
+  const m = message as Record<string, unknown>;
+  const content = m.content;
+  const docs: DocumentBlock[] = [];
+
+  if (!Array.isArray(content)) {
+    return docs;
+  }
+  for (const block of content) {
+    if (typeof block !== "object" || block === null) {
+      continue;
+    }
+    const b = block as Record<string, unknown>;
+    if (b.type === "document") {
+      docs.push({
+        fileName: typeof b.fileName === "string" ? b.fileName : "document",
+        mimeType: typeof b.mimeType === "string" ? b.mimeType : "",
+      });
+    }
+  }
+  return docs;
+}
 
 function extractImages(message: unknown): ImageBlock[] {
   const m = message as Record<string, unknown>;
@@ -222,6 +251,24 @@ function renderMessageImages(images: ImageBlock[]) {
   `;
 }
 
+function renderMessageDocuments(docs: DocumentBlock[]) {
+  if (docs.length === 0) {
+    return nothing;
+  }
+  return html`
+    <div class="chat-message-docs">
+      ${docs.map(
+        (doc) => html`
+          <div class="chat-message-doc-chip">
+            ${icons.fileText}
+            <span class="chat-message-doc-name">${doc.fileName}</span>
+          </div>
+        `,
+      )}
+    </div>
+  `;
+}
+
 function renderGroupedMessage(
   message: unknown,
   opts: { isStreaming: boolean; showReasoning: boolean },
@@ -240,6 +287,8 @@ function renderGroupedMessage(
   const hasToolCards = toolCards.length > 0;
   const images = extractImages(message);
   const hasImages = images.length > 0;
+  const docBlocks = extractDocumentBlocks(message);
+  const hasDocuments = docBlocks.length > 0;
 
   const extractedText = extractTextCached(message);
   const extractedThinking =
@@ -262,13 +311,14 @@ function renderGroupedMessage(
     return html`${toolCards.map((card) => renderToolCardSidebar(card, onOpenSidebar))}`;
   }
 
-  if (!markdown && !hasToolCards && !hasImages) {
+  if (!markdown && !hasToolCards && !hasImages && !hasDocuments) {
     return nothing;
   }
 
   return html`
     <div class="${bubbleClasses}">
       ${canCopyMarkdown ? renderCopyAsMarkdownButton(markdown!) : nothing}
+      ${renderMessageDocuments(docBlocks)}
       ${renderMessageImages(images)}
       ${
         reasoningMarkdown

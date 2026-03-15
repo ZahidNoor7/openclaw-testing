@@ -25,7 +25,9 @@ export type Tab =
   | "config"
   | "organizations"
   | "debug"
-  | "logs";
+  | "logs"
+  | "login"
+  | "onboarding";
 
 const TAB_PATHS: Record<Tab, string> = {
   agents: "/agents",
@@ -42,6 +44,8 @@ const TAB_PATHS: Record<Tab, string> = {
   organizations: "/organizations",
   debug: "/debug",
   logs: "/logs",
+  login: "/login",
+  onboarding: "/onboarding",
 };
 
 const PATH_TO_TAB = new Map(Object.entries(TAB_PATHS).map(([tab, path]) => [path, tab as Tab]));
@@ -155,6 +159,9 @@ export function iconForTab(tab: Tab): IconName {
       return "scrollText";
     case "organizations":
       return "folder";
+    case "login":
+    case "onboarding":
+      return "settings";
     default:
       return "folder";
   }

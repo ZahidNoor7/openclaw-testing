@@ -182,6 +182,41 @@
   object-fit: contain;
 }
 
+/* Document (non-image) attachment preview */
+.chat-attachment__file {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: 100%;
+  height: 100%;
+  padding: 8px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+.chat-attachment__file svg {
+  width: 26px;
+  height: 26px;
+  flex-shrink: 0;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.chat-attachment__filename {
+  font-size: 10px;
+  text-align: center;
+  line-height: 1.2;
+  word-break: break-all;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  color: var(--text);
+}
+
 .chat-attachment__remove {
   position: absolute;
   top: 4px;
@@ -231,6 +266,48 @@
 
 :root[data-theme="light"] .chat-attachment__remove {
   background: rgba(0, 0, 0, 0.6);
+}
+
+/* Document chips displayed in chat messages */
+.chat-message-docs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.chat-message-doc-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--bg);
+  font-size: 12px;
+  color: var(--text);
+  max-width: 240px;
+  min-width: 0;
+}
+
+.chat-message-doc-chip svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 1.5;
+}
+
+.chat-message-doc-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* User message document chips align right */
+.chat-group.user .chat-message-docs {
+  justify-content: flex-end;
 }
 
 /* Message images (sent images displayed in chat) */
@@ -320,6 +397,23 @@
   line-height: 1;
   white-space: nowrap;
   box-sizing: border-box;
+}
+
+/* Paperclip / attach button — square icon button */
+.chat-compose .chat-compose__actions .chat-compose__attach-btn {
+  width: 40px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chat-compose__attach-btn svg {
+  width: 16px;
+  height: 16px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
 }
 
 /* Chat controls - moved to content-header area, left aligned */

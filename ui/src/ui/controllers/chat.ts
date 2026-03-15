@@ -165,18 +165,32 @@ export async function sendChatMessage(
 
   const now = Date.now();
 
-  // Build user message content blocks
-  const contentBlocks: Array<{ type: string; text?: string; source?: unknown }> = [];
+  // Build user message content blocks for local chat display
+  const contentBlocks: Array<{
+    type: string;
+    text?: string;
+    source?: unknown;
+    fileName?: string;
+    mimeType?: string;
+  }> = [];
   if (msg) {
     contentBlocks.push({ type: "text", text: msg });
   }
-  // Add image previews to the message for display
   if (hasAttachments) {
     for (const att of attachments) {
-      contentBlocks.push({
-        type: "image",
-        source: { type: "base64", media_type: att.mimeType, data: att.dataUrl },
-      });
+      if (att.mimeType.startsWith("image/")) {
+        contentBlocks.push({
+          type: "image",
+          source: { type: "base64", media_type: att.mimeType, data: att.dataUrl },
+        });
+      } else {
+        // Document / text file — rendered as a chip in the user bubble
+        contentBlocks.push({
+          type: "document",
+          fileName: att.fileName ?? att.mimeType,
+          mimeType: att.mimeType,
+        });
+      }
     }
   }
 
@@ -205,9 +219,10 @@ export async function sendChatMessage(
             return null;
           }
           return {
-            type: "image",
+            type: att.mimeType.startsWith("image/") ? "image" : "document",
             mimeType: parsed.mimeType,
             content: parsed.content,
+            fileName: att.fileName,
           };
         })
         .filter((a): a is NonNullable<typeof a> => a !== null)

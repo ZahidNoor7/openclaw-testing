@@ -248,6 +248,15 @@ export async function resolveApiKeyForProvider(params: {
     return resolveAwsSdkAuthInfo();
   }
 
+  // An explicit real API key in models.providers.[provider].apiKey takes precedence over
+  // auth profiles and environment variables. This allows per-tenant key overrides to win
+  // over any shared profile/env setup. Marker values (env-var names, OAuth markers, etc.)
+  // are skipped here and fall through to the standard resolution order below.
+  const rawConfigKey = getCustomProviderApiKey(cfg, provider);
+  if (rawConfigKey && !isNonSecretApiKeyMarker(rawConfigKey)) {
+    return { apiKey: rawConfigKey, source: "models.providers config", mode: "api-key" };
+  }
+
   const order = resolveAuthProfileOrder({
     cfg,
     store,

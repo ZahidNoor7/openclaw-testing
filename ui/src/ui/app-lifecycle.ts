@@ -1,3 +1,4 @@
+import { checkAuthOnMount } from "./app-auth.ts";
 import { connectGateway } from "./app-gateway.ts";
 import {
   startLogsPolling,
@@ -40,6 +41,12 @@ type LifecycleHost = {
   logsEntries: unknown[];
   popStateHandler: () => void;
   topbarObserver: ResizeObserver | null;
+  // Auth state (optional — present on full OpenClawApp host)
+  settings?: { gatewayUrl: string };
+  appAuth?: unknown;
+  appAuthChecked?: boolean;
+  setTab?: (tab: Tab) => void;
+  connect?: () => void;
 };
 
 export function handleConnected(host: LifecycleHost) {
@@ -68,6 +75,10 @@ export function handleConnected(host: LifecycleHost) {
 
 export function handleFirstUpdated(host: LifecycleHost) {
   observeTopbar(host as unknown as Parameters<typeof observeTopbar>[0]);
+  // Check app-level auth session on first render.
+  if (host.settings && typeof host.setTab === "function" && typeof host.connect === "function") {
+    void checkAuthOnMount(host as unknown as Parameters<typeof checkAuthOnMount>[0]);
+  }
 }
 
 export function handleDisconnected(host: LifecycleHost) {

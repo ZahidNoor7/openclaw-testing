@@ -1,5 +1,6 @@
 import type { EventLogEntry } from "./app-events.ts";
 import type { CompactionStatus, FallbackStatus } from "./app-tool-stream.ts";
+import type { AppAuthSession } from "./auth-storage.ts";
 import type { CronModelSuggestionsState, CronState } from "./controllers/cron.ts";
 import type { DevicePairingList } from "./controllers/devices.ts";
 import type { ExecApprovalRequest } from "./controllers/exec-approval.ts";
@@ -35,6 +36,27 @@ import type { NostrProfileFormState } from "./views/channels.nostr-profile-form.
 import type { SessionLogEntry } from "./views/usage.ts";
 
 export type AppViewState = {
+  /** App-level auth session (separate from gateway WS token auth). */
+  appAuth: AppAuthSession | null;
+  /** True once the auth session has been checked on startup (prevents flash). */
+  appAuthChecked: boolean;
+  /** Login form state */
+  loginEmail: string;
+  loginPassword: string;
+  loginError: string | null;
+  loginLoading: boolean;
+  /** Onboarding form state */
+  onboardingOrgName: string;
+  onboardingAdminName: string;
+  onboardingEmail: string;
+  onboardingPassword: string;
+  onboardingError: string | null;
+  onboardingLoading: boolean;
+  /** Org users cache keyed by orgId (super_admin only) */
+  orgUsersByOrg: Record<
+    string,
+    Array<{ id: string; email: string; displayName: string; status: string; role: string }>
+  >;
   settings: UiSettings;
   password: string;
   tab: Tab;
@@ -164,7 +186,6 @@ export type AppViewState = {
   orgCreateName: string;
   orgCreateId: string;
   orgCreateDescription: string;
-  orgCreateOpenAiKey: string;
   orgSaving: boolean;
   orgLastError: string | null;
   orgSwitching: boolean;
@@ -176,7 +197,27 @@ export type AppViewState = {
   orgEditingId: string | null;
   orgEditName: string;
   orgEditDescription: string;
-  orgEditOpenAiKey: string;
+  /** Multi-key management: keys queued while creating a new org */
+  orgCreateApiKeys: import("../../../src/config/types.openclaw.js").OrgApiKey[];
+  orgCreateApiKeyProvider: string;
+  orgCreateApiKeyLabel: string;
+  orgCreateApiKeyValue: string;
+  orgCreateApiKeyShowValue: boolean;
+  /** Multi-key management: add-key form state inside the edit panel */
+  orgEditApiKeyProvider: string;
+  orgEditApiKeyLabel: string;
+  orgEditApiKeyValue: string;
+  orgEditApiKeyShowValue: boolean;
+  /** Set of key IDs whose values are currently revealed */
+  orgKeyShowIds: Set<string>;
+  /** ID of the key currently being replaced inline (null = none) */
+  orgReplaceKeyId: string | null;
+  /** New key value being typed in the inline replace form */
+  orgReplaceKeyValue: string;
+  /** Whether the replacement value is visible (not masked) */
+  orgReplaceKeyShowValue: boolean;
+  /** Which org's user list is currently expanded (super_admin only) */
+  expandedUsersOrgId: string | null;
   sessionsLoading: boolean;
   sessionsResult: SessionsListResult | null;
   sessionsError: string | null;
@@ -289,6 +330,18 @@ export type AppViewState = {
     client: GatewayBrowserClient | null;
     refreshSessionsAfterChat: Set<string>;
     connect: () => void;
+    handleLogin: () => Promise<void>;
+    handleLogout: () => Promise<void>;
+    handleRegister: () => Promise<void>;
+    setLoginEmail: (v: string) => void;
+    setLoginPassword: (v: string) => void;
+    setOnboardingOrgName: (v: string) => void;
+    setOnboardingAdminName: (v: string) => void;
+    setOnboardingEmail: (v: string) => void;
+    setOnboardingPassword: (v: string) => void;
+    handleLoadOrgUsers: (orgId: string) => Promise<void>;
+    handleOrgStatusChange: (orgId: string, status: "active" | "suspended") => Promise<void>;
+    handleRegenerateApiKey: () => Promise<void>;
     setTab: (tab: Tab) => void;
     setTheme: (theme: ThemeMode, context?: ThemeTransitionContext) => void;
     applySettings: (next: UiSettings) => void;

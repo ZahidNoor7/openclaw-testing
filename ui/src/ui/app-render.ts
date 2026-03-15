@@ -85,8 +85,10 @@ import { renderDebug } from "./views/debug.ts";
 import { renderExecApprovalPrompt } from "./views/exec-approval.ts";
 import { renderGatewayUrlConfirmation } from "./views/gateway-url-confirmation.ts";
 import { renderInstances } from "./views/instances.ts";
+import { renderLogin } from "./views/login.ts";
 import { renderLogs } from "./views/logs.ts";
 import { renderNodes } from "./views/nodes.ts";
+import { renderOnboarding } from "./views/onboarding.ts";
 import { renderOrganizations } from "./views/organizations.ts";
 import { renderOverview } from "./views/overview.ts";
 import { renderSessions } from "./views/sessions.ts";
@@ -149,6 +151,58 @@ function resolveAssistantAvatarUrl(state: AppViewState): string | undefined {
 }
 
 export function renderApp(state: AppViewState) {
+  // Auth gate: block access until session check completes.
+  if (!state.appAuthChecked) {
+    return html`
+      <div
+        style="
+          min-height: 100vh;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          background: var(--bg, #0a0a0a);
+          color: var(--text, #e4e4e7);
+          font-size: 14px;
+          font-family: inherit;
+        "
+      >
+        Loading…
+      </div>
+    `;
+  }
+  if (!state.appAuth) {
+    if (state.tab === "onboarding") {
+      return renderOnboarding({
+        orgName: state.onboardingOrgName,
+        adminName: state.onboardingAdminName,
+        email: state.onboardingEmail,
+        password: state.onboardingPassword,
+        error: state.onboardingError,
+        loading: state.onboardingLoading,
+        onOrgNameChange: (v) => state.setOnboardingOrgName(v),
+        onAdminNameChange: (v) => state.setOnboardingAdminName(v),
+        onEmailChange: (v) => state.setOnboardingEmail(v),
+        onPasswordChange: (v) => state.setOnboardingPassword(v),
+        onSubmit: () => {
+          void state.handleRegister();
+        },
+        onGoToLogin: () => state.setTab("login"),
+      });
+    }
+    return renderLogin({
+      email: state.loginEmail,
+      password: state.loginPassword,
+      error: state.loginError,
+      loading: state.loginLoading,
+      onEmailChange: (v) => state.setLoginEmail(v),
+      onPasswordChange: (v) => state.setLoginPassword(v),
+      onSubmit: () => {
+        void state.handleLogin();
+      },
+      onGoToOnboarding: () => state.setTab("onboarding"),
+    });
+  }
+
   const openClawVersion =
     (typeof state.hello?.server?.version === "string" && state.hello.server.version.trim()) ||
     state.updateAvailable?.currentVersion ||
@@ -174,7 +228,16 @@ export function renderApp(state: AppViewState) {
     state.configSnapshot?.config?.organizations != null &&
     typeof state.configSnapshot.config.organizations === "object"
       ? (state.configSnapshot.config.organizations as {
-          list?: Array<{ id: string; name: string; openaiApiKey?: string }>;
+          list?: Array<{
+            id: string;
+            name: string;
+            /** @deprecated top-level key; kept for backwards compat */
+            openaiApiKey?: string;
+            /** Current multi-provider keys array */
+            providerKeys?: Array<{ enabled: boolean }>;
+            /** @deprecated alias for providerKeys */
+            apiKeys?: Array<{ enabled: boolean }>;
+          }>;
           activeId?: string;
         })
       : null;
@@ -182,16 +245,67 @@ export function renderApp(state: AppViewState) {
     ? (_topbarOrgBlock.list as Array<{ id: string; name: string }>)
     : [];
   const topbarActiveOrgId = _topbarOrgBlock?.activeId ?? null;
-  // API key isolation: when an org is active and has no openaiApiKey, block chat.
-  const _activeOrgFull = topbarActiveOrgId
-    ? (_topbarOrgBlock?.list ?? []).find((o) => o.id === topbarActiveOrgId)
+  // For tenant_admin, always scope to their own org regardless of config activeId.
+  const effectiveActiveOrgId =
+    state.appAuth?.role === "tenant_admin"
+      ? (state.appAuth.orgId ?? topbarActiveOrgId)
+      : topbarActiveOrgId;
+  // API key isolation: an org has usable keys when it has any enabled entry in
+  // providerKeys/apiKeys, or the legacy openaiApiKey field is set.
+  const _activeOrgFull = effectiveActiveOrgId
+    ? (_topbarOrgBlock?.list ?? []).find((o) => o.id === effectiveActiveOrgId)
     : null;
-  const orgMissingApiKey = _activeOrgFull !== undefined && !_activeOrgFull?.openaiApiKey?.trim();
+  const _orgHasAnyKey =
+    Boolean(_activeOrgFull?.openaiApiKey?.trim()) ||
+    (_activeOrgFull?.providerKeys ?? []).some((k) => k.enabled) ||
+    (_activeOrgFull?.apiKeys ?? []).some((k) => k.enabled);
+  const orgMissingApiKey = effectiveActiveOrgId !== null && !_orgHasAnyKey;
   const chatDisabledReason = !state.connected
     ? t("chat.disconnected")
     : orgMissingApiKey
-      ? "Add an OpenAI API key for this organization in Settings → Organizations before chatting."
+      ? "No API key configured for this organization. Chat and agent features are disabled until you add one."
       : null;
+
+  /** Categorize raw LLM/API error strings into user-friendly messages. */
+  function categorizeChatError(raw: string): string {
+    const s = raw.toLowerCase();
+    if (
+      s.includes("no api key") ||
+      s.includes("missing api key") ||
+      s.includes("api key not set")
+    ) {
+      return "No API key configured. Go to Settings → Organizations to add your API key.";
+    }
+    if (
+      s.includes("invalid api key") ||
+      s.includes("incorrect api key") ||
+      s.includes("invalid_api_key") ||
+      s.includes("authentication") ||
+      s.includes("401")
+    ) {
+      return "Your API key is invalid. Please check and update it in Settings → Organizations.";
+    }
+    if (s.includes("expired") || s.includes("deactivated")) {
+      return "Your API key has expired. Please renew or replace it in Settings → Organizations.";
+    }
+    if (
+      s.includes("rate limit") ||
+      s.includes("quota") ||
+      s.includes("insufficient_quota") ||
+      s.includes("429")
+    ) {
+      return "Your API usage limit has been reached. Please check your plan or update your API key in Settings → Organizations.";
+    }
+    if (
+      s.includes("network") ||
+      s.includes("econnrefused") ||
+      s.includes("fetch") ||
+      s.includes("connect")
+    ) {
+      return "Unable to connect using your API key. Please verify it in Settings → Organizations or try again later.";
+    }
+    return raw;
+  }
 
   // Org-filtered agents list: strict isolation — only show agents explicitly assigned
   // to the active org.  Global agents (no organizationId) are only visible when no
@@ -203,11 +317,13 @@ export function renderApp(state: AppViewState) {
         | { list?: Array<{ id: string; organizationId?: string }> }
         | undefined
     )?.list ?? [];
-  const _visibleAgentIds: Set<string> = topbarActiveOrgId
-    ? new Set(_agentsConfig.filter((a) => a.organizationId === topbarActiveOrgId).map((a) => a.id))
+  const _visibleAgentIds: Set<string> = effectiveActiveOrgId
+    ? new Set(
+        _agentsConfig.filter((a) => a.organizationId === effectiveActiveOrgId).map((a) => a.id),
+      )
     : null!; // null signals "show all" — checked below
   const orgFilteredAgentsList =
-    state.agentsList && topbarActiveOrgId
+    state.agentsList && effectiveActiveOrgId
       ? {
           ...state.agentsList,
           agents: state.agentsList.agents.filter((a) => _visibleAgentIds.has(a.id)),
@@ -469,7 +585,7 @@ export function renderApp(state: AppViewState) {
             <span class="mono">${state.connected ? t("common.ok") : t("common.offline")}</span>
           </div>
           ${
-            topbarOrgs.length > 0
+            topbarOrgs.length > 0 && state.appAuth?.role !== "tenant_admin"
               ? html`<div class="pill">
                 <span style="opacity:0.6;font-size:11px;">org</span>
                 ${
@@ -494,10 +610,29 @@ export function renderApp(state: AppViewState) {
               : nothing
           }
           ${renderThemeToggle(state)}
+          ${
+            state.appAuth
+              ? html`<div class="pill" style="gap:6px;">
+            <span style="color:var(--text,#e4e4e7);opacity:0.75;font-size:11px;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title=${state.appAuth.email}>${state.appAuth.displayName || state.appAuth.email}</span>
+            <button
+              style="background:transparent;border:1px solid var(--border-strong,#3f3f46);border-radius:5px;color:var(--text,#e4e4e7);font-size:11px;padding:2px 7px;cursor:pointer;"
+              @click=${() => {
+                void state.handleLogout();
+              }}
+            >Sign out</button>
+          </div>`
+              : nothing
+          }
         </div>
       </header>
       <aside class="nav ${state.settings.navCollapsed ? "nav--collapsed" : ""}">
-        ${TAB_GROUPS.map((group) => {
+        ${(state.appAuth?.role === "tenant_admin"
+          ? TAB_GROUPS.map((g) => ({
+              ...g,
+              tabs: g.tabs.filter((t) => t !== "config" && t !== "debug" && t !== "logs"),
+            })).filter((g) => g.tabs.length > 0)
+          : TAB_GROUPS
+        ).map((group) => {
           const isGroupCollapsed = state.settings.navGroupsCollapsed[group.label] ?? false;
           const hasActiveTab = group.tabs.some((tab) => tab === state.tab);
           return html`
@@ -867,8 +1002,8 @@ export function renderApp(state: AppViewState) {
                       entry["name"] = name;
                     }
                     // Assign to active org so the agent is visible under that org's filter.
-                    if (topbarActiveOrgId) {
-                      entry["organizationId"] = topbarActiveOrgId;
+                    if (effectiveActiveOrgId) {
+                      entry["organizationId"] = effectiveActiveOrgId;
                     }
                     updateConfigFormValue(state, ["agents", "list", nextIndex], entry);
                     await saveAgentsConfig(state);
@@ -1392,9 +1527,14 @@ export function renderApp(state: AppViewState) {
                 draft: state.chatMessage,
                 queue: state.chatQueue,
                 connected: state.connected,
-                canSend: state.connected,
+                canSend: state.connected && !chatDisabledReason,
                 disabledReason: chatDisabledReason,
-                error: state.lastError,
+                error: state.lastError ? categorizeChatError(state.lastError) : null,
+                onGoToOrgSettings: effectiveActiveOrgId
+                  ? () => {
+                      state.tab = "organizations";
+                    }
+                  : undefined,
                 sessions: state.sessionsResult,
                 focusMode: chatFocus,
                 onRefresh: () => {
@@ -1483,16 +1623,33 @@ export function renderApp(state: AppViewState) {
                   cfg?.organizations != null && typeof cfg.organizations === "object"
                     ? (cfg.organizations as { list?: unknown[]; activeId?: string })
                     : null;
+                type OrgApiKeyEntry = {
+                  id: string;
+                  provider: string;
+                  label?: string;
+                  key: string;
+                  enabled: boolean;
+                  createdAt?: string;
+                };
                 type OrgEntry = {
                   id: string;
                   name: string;
                   description?: string;
                   createdAt?: string;
                   openaiApiKey?: string;
+                  providerKeys?: OrgApiKeyEntry[];
+                  /** @deprecated alias; read by UI but new saves go to providerKeys */
+                  apiKeys?: OrgApiKeyEntry[];
                 };
                 const orgs = Array.isArray(orgBlock?.list) ? (orgBlock.list as OrgEntry[]) : [];
+                // For tenant_admin, always scope to their own org.
                 const activeOrgId =
-                  typeof orgBlock?.activeId === "string" ? orgBlock.activeId : null;
+                  state.appAuth?.role === "tenant_admin"
+                    ? (state.appAuth.orgId ??
+                      (typeof orgBlock?.activeId === "string" ? orgBlock.activeId : null))
+                    : typeof orgBlock?.activeId === "string"
+                      ? orgBlock.activeId
+                      : null;
 
                 function slugifyOrgName(name: string): string {
                   return (
@@ -1528,30 +1685,55 @@ export function renderApp(state: AppViewState) {
                       state.orgCreateName = "";
                       state.orgCreateId = "";
                       state.orgCreateDescription = "";
-                      state.orgCreateOpenAiKey = "";
+                      state.orgCreateApiKeys = [];
+                      state.orgCreateApiKeyProvider = "openai";
+                      state.orgCreateApiKeyLabel = "";
+                      state.orgCreateApiKeyValue = "";
+                      state.orgCreateApiKeyShowValue = false;
                     }
                   }
+                }
+
+                /** Generate a short unique ID for a new API key. */
+                function newKeyId(): string {
+                  return `key_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
                 }
 
                 return renderOrganizations({
                   loading: state.configLoading,
                   saving: state.orgSaving,
+                  connected: state.connected,
                   lastError: state.orgLastError,
                   organizations: orgs,
                   activeOrganizationId: activeOrgId,
+                  // Create form
                   createName: state.orgCreateName,
                   createId: state.orgCreateId,
                   createDescription: state.orgCreateDescription,
-                  createOpenAiKey: state.orgCreateOpenAiKey,
+                  createApiKeys: state.orgCreateApiKeys,
+                  createApiKeyProvider: state.orgCreateApiKeyProvider,
+                  createApiKeyLabel: state.orgCreateApiKeyLabel,
+                  createApiKeyValue: state.orgCreateApiKeyValue,
+                  createApiKeyShowValue: state.orgCreateApiKeyShowValue,
+                  // Edit form
                   editingId: state.orgEditingId,
                   editName: state.orgEditName,
                   editDescription: state.orgEditDescription,
-                  editOpenAiKey: state.orgEditOpenAiKey,
+                  editApiKeyProvider: state.orgEditApiKeyProvider,
+                  editApiKeyLabel: state.orgEditApiKeyLabel,
+                  editApiKeyValue: state.orgEditApiKeyValue,
+                  editApiKeyShowValue: state.orgEditApiKeyShowValue,
+                  // Show/hide state
+                  keyShowIds: state.orgKeyShowIds,
+                  // Replace key inline state
+                  replaceKeyId: state.orgReplaceKeyId,
+                  replaceKeyValue: state.orgReplaceKeyValue,
+                  replaceKeyShowValue: state.orgReplaceKeyShowValue,
+                  // Callbacks
                   onRefresh: () => loadConfig(state),
                   onCreateNameChange: (val) => (state.orgCreateName = val),
                   onCreateIdChange: (val) => (state.orgCreateId = val),
                   onCreateDescriptionChange: (val) => (state.orgCreateDescription = val),
-                  onCreateOpenAiKeyChange: (val) => (state.orgCreateOpenAiKey = val),
                   onCreate: async () => {
                     const name = state.orgCreateName.trim();
                     const id = state.orgCreateId.trim() || slugifyOrgName(name);
@@ -1568,8 +1750,8 @@ export function renderApp(state: AppViewState) {
                       ...(state.orgCreateDescription.trim()
                         ? { description: state.orgCreateDescription.trim() }
                         : {}),
-                      ...(state.orgCreateOpenAiKey.trim()
-                        ? { openaiApiKey: state.orgCreateOpenAiKey.trim() }
+                      ...(state.orgCreateApiKeys.length > 0
+                        ? { providerKeys: state.orgCreateApiKeys }
                         : {}),
                       createdAt: new Date().toISOString(),
                     };
@@ -1581,17 +1763,22 @@ export function renderApp(state: AppViewState) {
                     state.orgEditingId = org.id;
                     state.orgEditName = org.name;
                     state.orgEditDescription = org.description ?? "";
-                    state.orgEditOpenAiKey = "";
+                    state.orgEditApiKeyProvider = "openai";
+                    state.orgEditApiKeyLabel = "";
+                    state.orgEditApiKeyValue = "";
+                    state.orgEditApiKeyShowValue = false;
                   },
                   onEditCancel: () => {
                     state.orgEditingId = null;
                     state.orgEditName = "";
                     state.orgEditDescription = "";
-                    state.orgEditOpenAiKey = "";
+                    state.orgEditApiKeyProvider = "openai";
+                    state.orgEditApiKeyLabel = "";
+                    state.orgEditApiKeyValue = "";
+                    state.orgEditApiKeyShowValue = false;
                   },
                   onEditNameChange: (val) => (state.orgEditName = val),
                   onEditDescriptionChange: (val) => (state.orgEditDescription = val),
-                  onEditOpenAiKeyChange: (val) => (state.orgEditOpenAiKey = val),
                   onUpdate: async () => {
                     const editId = state.orgEditingId;
                     if (!editId) {
@@ -1605,17 +1792,16 @@ export function renderApp(state: AppViewState) {
                       ...existingOrg,
                       name: state.orgEditName.trim() || existingOrg.name,
                       description: state.orgEditDescription.trim() || undefined,
-                      // Only update key if user typed a new one; blank = keep existing
-                      ...(state.orgEditOpenAiKey.trim()
-                        ? { openaiApiKey: state.orgEditOpenAiKey.trim() }
-                        : {}),
                     };
                     const nextList = orgs.map((o) => (o.id === editId ? updatedOrg : o));
                     await orgSaveWith({ organizations: { ...orgBlock, list: nextList } }, false);
                     state.orgEditingId = null;
                     state.orgEditName = "";
                     state.orgEditDescription = "";
-                    state.orgEditOpenAiKey = "";
+                    state.orgEditApiKeyProvider = "openai";
+                    state.orgEditApiKeyLabel = "";
+                    state.orgEditApiKeyValue = "";
+                    state.orgEditApiKeyShowValue = false;
                   },
                   onSwitch: (id) => {
                     const orgName = orgs.find((o) => o.id === id)?.name ?? id;
@@ -1631,6 +1817,191 @@ export function renderApp(state: AppViewState) {
                       },
                     };
                     return orgSaveWith(patch);
+                  },
+                  // Multi-key: create form
+                  onCreateApiKeyProviderChange: (val) => (state.orgCreateApiKeyProvider = val),
+                  onCreateApiKeyLabelChange: (val) => (state.orgCreateApiKeyLabel = val),
+                  onCreateApiKeyValueChange: (val) => (state.orgCreateApiKeyValue = val),
+                  onCreateApiKeyToggleShow: () => {
+                    state.orgCreateApiKeyShowValue = !state.orgCreateApiKeyShowValue;
+                  },
+                  onCreateApiKeyAdd: () => {
+                    const v = state.orgCreateApiKeyValue.trim();
+                    if (!v) {
+                      return;
+                    }
+                    const newKey: import("../../../src/config/types.openclaw.js").OrgApiKey = {
+                      id: newKeyId(),
+                      provider: state.orgCreateApiKeyProvider,
+                      label: state.orgCreateApiKeyLabel.trim() || undefined,
+                      key: v,
+                      enabled: true,
+                      createdAt: new Date().toISOString(),
+                    };
+                    state.orgCreateApiKeys = [...state.orgCreateApiKeys, newKey];
+                    state.orgCreateApiKeyValue = "";
+                    state.orgCreateApiKeyLabel = "";
+                    state.orgCreateApiKeyShowValue = false;
+                  },
+                  onCreateApiKeyRemove: (keyId) => {
+                    state.orgCreateApiKeys = state.orgCreateApiKeys.filter((k) => k.id !== keyId);
+                  },
+                  // Multi-key: edit form
+                  onEditApiKeyProviderChange: (val) => (state.orgEditApiKeyProvider = val),
+                  onEditApiKeyLabelChange: (val) => (state.orgEditApiKeyLabel = val),
+                  onEditApiKeyValueChange: (val) => (state.orgEditApiKeyValue = val),
+                  onEditApiKeyToggleShow: () => {
+                    state.orgEditApiKeyShowValue = !state.orgEditApiKeyShowValue;
+                  },
+                  onEditApiKeyAdd: async (orgId) => {
+                    const v = state.orgEditApiKeyValue.trim();
+                    if (!v) {
+                      return;
+                    }
+                    const target = orgs.find((o) => o.id === orgId);
+                    if (!target) {
+                      return;
+                    }
+                    const newKey: OrgApiKeyEntry = {
+                      id: newKeyId(),
+                      provider: state.orgEditApiKeyProvider,
+                      label: state.orgEditApiKeyLabel.trim() || undefined,
+                      key: v,
+                      enabled: true,
+                      createdAt: new Date().toISOString(),
+                    };
+                    const nextKeys = [...(target.providerKeys ?? []), newKey];
+                    const nextList = orgs.map((o) =>
+                      o.id === orgId ? { ...target, providerKeys: nextKeys } : o,
+                    );
+                    state.orgEditApiKeyValue = "";
+                    state.orgEditApiKeyLabel = "";
+                    state.orgEditApiKeyShowValue = false;
+                    await orgSaveWith({ organizations: { ...orgBlock, list: nextList } }, false);
+                  },
+                  onEditApiKeyRemove: async (orgId, keyId) => {
+                    const target = orgs.find((o) => o.id === orgId);
+                    if (!target) {
+                      return;
+                    }
+                    // Remove from whichever array holds the key (providerKeys or legacy apiKeys)
+                    const nextProviderKeys = (target.providerKeys ?? []).filter(
+                      (k) => k.id !== keyId,
+                    );
+                    const nextApiKeys = (target.apiKeys ?? []).filter((k) => k.id !== keyId);
+                    const nextList = orgs.map((o) =>
+                      o.id === orgId
+                        ? {
+                            ...target,
+                            providerKeys: nextProviderKeys,
+                            apiKeys: nextApiKeys.length > 0 ? nextApiKeys : undefined,
+                          }
+                        : o,
+                    );
+                    // Also clear from show/replace set
+                    const next = new Set(state.orgKeyShowIds);
+                    next.delete(keyId);
+                    state.orgKeyShowIds = next;
+                    if (state.orgReplaceKeyId === keyId) {
+                      state.orgReplaceKeyId = null;
+                      state.orgReplaceKeyValue = "";
+                    }
+                    await orgSaveWith({ organizations: { ...orgBlock, list: nextList } }, false);
+                  },
+                  onEditApiKeyToggleEnabled: async (orgId, keyId, enabled) => {
+                    const target = orgs.find((o) => o.id === orgId);
+                    if (!target) {
+                      return;
+                    }
+                    // Toggle in whichever array holds the key
+                    const nextProviderKeys = (target.providerKeys ?? []).map((k) =>
+                      k.id === keyId ? { ...k, enabled } : k,
+                    );
+                    const nextApiKeys = (target.apiKeys ?? []).map((k) =>
+                      k.id === keyId ? { ...k, enabled } : k,
+                    );
+                    const nextList = orgs.map((o) =>
+                      o.id === orgId
+                        ? {
+                            ...target,
+                            providerKeys: nextProviderKeys,
+                            apiKeys: nextApiKeys.length > 0 ? nextApiKeys : undefined,
+                          }
+                        : o,
+                    );
+                    await orgSaveWith({ organizations: { ...orgBlock, list: nextList } }, false);
+                  },
+                  onToggleKeyShow: (keyId) => {
+                    const next = new Set(state.orgKeyShowIds);
+                    if (next.has(keyId)) {
+                      next.delete(keyId);
+                    } else {
+                      next.add(keyId);
+                    }
+                    state.orgKeyShowIds = next;
+                  },
+                  // Replace key inline handlers
+                  onStartReplaceKey: (keyId) => {
+                    state.orgReplaceKeyId = keyId;
+                    state.orgReplaceKeyValue = "";
+                    state.orgReplaceKeyShowValue = false;
+                  },
+                  onCancelReplaceKey: () => {
+                    state.orgReplaceKeyId = null;
+                    state.orgReplaceKeyValue = "";
+                    state.orgReplaceKeyShowValue = false;
+                  },
+                  onReplaceKeyValueChange: (val) => {
+                    state.orgReplaceKeyValue = val;
+                  },
+                  onReplaceKeyToggleShow: () => {
+                    state.orgReplaceKeyShowValue = !state.orgReplaceKeyShowValue;
+                  },
+                  onConfirmReplaceKey: async (orgId, keyId, newValue) => {
+                    const target = orgs.find((o) => o.id === orgId);
+                    if (!target || !newValue.trim()) {
+                      return;
+                    }
+                    // Update in providerKeys if present there, else in apiKeys
+                    const inProviderKeys = (target.providerKeys ?? []).some((k) => k.id === keyId);
+                    const nextProviderKeys = inProviderKeys
+                      ? (target.providerKeys ?? []).map((k) =>
+                          k.id === keyId ? { ...k, key: newValue.trim() } : k,
+                        )
+                      : (target.providerKeys ?? []);
+                    const nextApiKeys = !inProviderKeys
+                      ? (target.apiKeys ?? []).map((k) =>
+                          k.id === keyId ? { ...k, key: newValue.trim() } : k,
+                        )
+                      : (target.apiKeys ?? []);
+                    const nextList = orgs.map((o) =>
+                      o.id === orgId
+                        ? {
+                            ...target,
+                            providerKeys: nextProviderKeys,
+                            apiKeys: nextApiKeys.length > 0 ? nextApiKeys : undefined,
+                          }
+                        : o,
+                    );
+                    state.orgReplaceKeyId = null;
+                    state.orgReplaceKeyValue = "";
+                    state.orgReplaceKeyShowValue = false;
+                    await orgSaveWith({ organizations: { ...orgBlock, list: nextList } }, false);
+                  },
+                  isSuperAdmin: state.appAuth?.role === "super_admin",
+                  orgUsers: state.orgUsersByOrg,
+                  expandedUsersOrgId: state.expandedUsersOrgId,
+                  onLoadUsers: (orgId) => {
+                    void state.handleLoadOrgUsers(orgId);
+                  },
+                  onToggleUsers: (orgId) => {
+                    state.expandedUsersOrgId = state.expandedUsersOrgId === orgId ? null : orgId;
+                  },
+                  onActivateOrg: (orgId) => {
+                    void state.handleOrgStatusChange(orgId, "active");
+                  },
+                  onSuspendOrg: (orgId) => {
+                    void state.handleOrgStatusChange(orgId, "suspended");
                   },
                 });
               })()

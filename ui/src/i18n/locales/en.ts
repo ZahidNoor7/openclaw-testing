@@ -37,6 +37,8 @@ export const en: TranslationMap = {
     organizations: "Organizations",
     debug: "Debug",
     logs: "Logs",
+    login: "Sign In",
+    onboarding: "Create Organization",
   },
   subtitles: {
     agents: "Manage agent workspaces, tools, and identities.",
@@ -53,6 +55,8 @@ export const en: TranslationMap = {
     organizations: "Manage organizations (tenants) for multi-tenancy.",
     debug: "Gateway snapshots, events, and manual RPC calls.",
     logs: "Live tail of the gateway file logs.",
+    login: "Sign in to your account to access the dashboard.",
+    onboarding: "Create your organization and admin account.",
   },
   overview: {
     access: {
@@ -117,6 +121,7 @@ export const en: TranslationMap = {
     showCronSessions: "Show cron sessions",
     showCronSessionsHidden: "Show cron sessions ({count} hidden)",
     onboardingDisabled: "Disabled during onboarding",
+    attachFile: "Attach files",
   },
   languages: {
     en: "English",

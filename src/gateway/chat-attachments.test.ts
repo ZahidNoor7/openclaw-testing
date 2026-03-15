@@ -139,6 +139,72 @@ describe("parseMessageWithAttachments", () => {
   });
 });
 
+describe("text file injection", () => {
+  it("injects plain text file content into message", async () => {
+    const textContent = "Hello, world!";
+    const b64 = Buffer.from(textContent, "utf-8").toString("base64");
+    const { parsed, logs } = await parseWithWarnings("user question", [
+      { mimeType: "text/plain", fileName: "notes.txt", content: b64 },
+    ]);
+    expect(logs).toHaveLength(0);
+    expect(parsed.images).toHaveLength(0);
+    expect(parsed.message).toContain('<document filename="notes.txt">');
+    expect(parsed.message).toContain(textContent);
+    expect(parsed.message).toContain("user question");
+    // Document block should precede the user message
+    expect(parsed.message.indexOf("<document")).toBeLessThan(
+      parsed.message.indexOf("user question"),
+    );
+  });
+
+  it("injects JSON file content into message", async () => {
+    const json = '{"key":"value"}';
+    const b64 = Buffer.from(json, "utf-8").toString("base64");
+    const { parsed } = await parseWithWarnings("q", [
+      { mimeType: "application/json", fileName: "data.json", content: b64 },
+    ]);
+    expect(parsed.message).toContain('<document filename="data.json">');
+    expect(parsed.message).toContain(json);
+    expect(parsed.images).toHaveLength(0);
+  });
+
+  it("skips oversized text files and logs warning", async () => {
+    const big = Buffer.from("x".repeat(200), "utf-8").toString("base64");
+    const logs: string[] = [];
+    const parsed = await parseMessageWithAttachments(
+      "q",
+      [{ mimeType: "text/plain", fileName: "big.txt", content: big }],
+      { maxBytes: 16, log: { warn: (w) => logs.push(w) } },
+    );
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/exceeds size limit/i);
+    expect(parsed.message).toBe("q");
+  });
+
+  it("handles message-only (no text files)", async () => {
+    const { parsed } = await parseWithWarnings("just a message", []);
+    expect(parsed.message).toBe("just a message");
+    expect(parsed.images).toHaveLength(0);
+  });
+});
+
+describe("unsupported binary types", () => {
+  it("logs warning and skips docx/xlsx attachments", async () => {
+    const fake = Buffer.from("PK\x03\x04fake-docx").toString("base64");
+    const { parsed, logs } = await parseWithWarnings("q", [
+      {
+        mimeType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        fileName: "file.docx",
+        content: fake,
+      },
+    ]);
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/unsupported type/i);
+    expect(parsed.message).toBe("q");
+    expect(parsed.images).toHaveLength(0);
+  });
+});
+
 describe("shared attachment validation", () => {
   it("rejects invalid base64 content for both builder and parser", async () => {
     const bad: ChatAttachment = {

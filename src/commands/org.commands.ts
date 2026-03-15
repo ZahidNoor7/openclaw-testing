@@ -115,12 +115,27 @@ function slugifyOrgName(name: string): string {
   );
 }
 
+/** The default/admin org. Only this org is permitted to create new organizations. */
+const DEFAULT_ORG_ID = "openclaw";
+
 export async function orgCreateCommand(
   opts: OrgCreateOptions,
   runtime: RuntimeEnv = defaultRuntime,
 ): Promise<void> {
   const cfg = await requireValidConfig(runtime);
   if (!cfg) {
+    return;
+  }
+
+  // Only the root/admin org may create new organizations.
+  // The root org is the one with id "openclaw" if it exists, otherwise the
+  // first org in the list (for setups created via the GUI).
+  const allOrgs = listOrganizations(cfg);
+  const rootOrgId = allOrgs.find((o) => o.id === DEFAULT_ORG_ID)?.id ?? allOrgs[0]?.id ?? null;
+  const activeOrg = getActiveOrganization(cfg);
+  if (activeOrg && rootOrgId !== null && activeOrg.id !== rootOrgId) {
+    runtime.error(`Permission denied: only the root organization can create new organizations.`);
+    runtime.exit(1);
     return;
   }
 

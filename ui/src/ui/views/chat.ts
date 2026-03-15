@@ -53,6 +53,7 @@ export type ChatProps = {
   canSend: boolean;
   disabledReason: string | null;
   error: string | null;
+  onGoToOrgSettings?: () => void;
   sessions: SessionsListResult | null;
   // Focus mode
   focusMode: boolean;
@@ -163,6 +164,34 @@ function generateAttachmentId(): string {
   return `att-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
+// Module-level ref for the hidden file input; only one chat compose is visible at a time.
+let fileInputRef: HTMLInputElement | null = null;
+
+function handleFileSelect(e: Event, props: ChatProps) {
+  const input = e.target as HTMLInputElement;
+  const files = input.files;
+  // Reset so the same file can be re-selected later
+  input.value = "";
+  if (!files || !props.onAttachmentsChange) {
+    return;
+  }
+  for (const file of Array.from(files)) {
+    const reader = new FileReader();
+    reader.addEventListener("load", () => {
+      const dataUrl = reader.result as string;
+      const newAttachment: ChatAttachment = {
+        id: generateAttachmentId(),
+        dataUrl,
+        mimeType: file.type || "application/octet-stream",
+        fileName: file.name,
+      };
+      const current = props.attachments ?? [];
+      props.onAttachmentsChange?.([...current, newAttachment]);
+    });
+    reader.readAsDataURL(file);
+  }
+}
+
 function handlePaste(e: ClipboardEvent, props: ChatProps) {
   const items = e.clipboardData?.items;
   if (!items || !props.onAttachmentsChange) {
@@ -215,11 +244,20 @@ function renderAttachmentPreview(props: ChatProps) {
       ${attachments.map(
         (att) => html`
           <div class="chat-attachment">
-            <img
-              src=${att.dataUrl}
-              alt="Attachment preview"
-              class="chat-attachment__img"
-            />
+            ${
+              att.mimeType.startsWith("image/")
+                ? html`<img
+                  src=${att.dataUrl}
+                  alt="Attachment preview"
+                  class="chat-attachment__img"
+                />`
+                : html`<div class="chat-attachment__file">
+                  ${icons.fileText}
+                  <span class="chat-attachment__filename"
+                    >${att.fileName ?? att.mimeType}</span
+                  >
+                </div>`
+            }
             <button
               class="chat-attachment__remove"
               type="button"
@@ -239,7 +277,9 @@ function renderAttachmentPreview(props: ChatProps) {
 }
 
 export function renderChat(props: ChatProps) {
-  const canCompose = props.connected;
+  // chatBlocked covers both "disconnected" and "org API key missing" cases.
+  const chatBlocked = !props.connected || !!props.disabledReason;
+  const canCompose = !chatBlocked;
   const isBusy = props.sending || props.stream !== null;
   const canAbort = Boolean(props.canAbort && props.onAbort);
   const activeSession = props.sessions?.sessions?.find((row) => row.key === props.sessionKey);
@@ -253,8 +293,8 @@ export function renderChat(props: ChatProps) {
   const hasAttachments = (props.attachments?.length ?? 0) > 0;
   const composePlaceholder = props.connected
     ? hasAttachments
-      ? "Add a message or paste more images..."
-      : "Message (↩ to send, Shift+↩ for line breaks, paste images)"
+      ? "Add a message or attach more files…"
+      : "Message (↩ to send, Shift+↩ for line breaks, paste or attach files)"
     : "Connect to the gateway to start chatting…";
 
   const splitRatio = props.splitRatio ?? 0.6;
@@ -317,9 +357,76 @@ export function renderChat(props: ChatProps) {
 
   return html`
     <section class="card chat">
-      ${props.disabledReason ? html`<div class="callout">${props.disabledReason}</div>` : nothing}
+      ${
+        props.disabledReason
+          ? html`<div class="chat-disabled-banner">
+              <style>
+                .chat-disabled-banner {
+                  display: flex;
+                  align-items: flex-start;
+                  gap: 12px;
+                  padding: 16px 18px;
+                  border-radius: var(--radius-lg, 10px);
+                  background: color-mix(in srgb, var(--warn, #f59e0b) 10%, var(--bg));
+                  border: 1px solid color-mix(in srgb, var(--warn, #f59e0b) 35%, transparent);
+                  margin-bottom: 4px;
+                }
+                .chat-disabled-icon {
+                  font-size: 20px;
+                  flex-shrink: 0;
+                  margin-top: 1px;
+                }
+                .chat-disabled-body { flex: 1; min-width: 0; }
+                .chat-disabled-title {
+                  font-size: 13px;
+                  font-weight: 700;
+                  margin-bottom: 4px;
+                  color: var(--warn, #f59e0b);
+                }
+                .chat-disabled-msg {
+                  font-size: 12px;
+                  color: var(--text-muted, var(--muted));
+                  line-height: 1.5;
+                }
+                .chat-disabled-action {
+                  margin-top: 10px;
+                }
+              </style>
+              <div class="chat-disabled-icon">🔑</div>
+              <div class="chat-disabled-body">
+                <div class="chat-disabled-title">Chat Disabled</div>
+                <div class="chat-disabled-msg">${props.disabledReason}</div>
+                ${
+                  props.onGoToOrgSettings
+                    ? html`<div class="chat-disabled-action">
+                        <button
+                          class="btn btn-primary btn--sm"
+                          @click=${props.onGoToOrgSettings}
+                        >Configure API Key</button>
+                      </div>`
+                    : nothing
+                }
+              </div>
+            </div>`
+          : nothing
+      }
 
-      ${props.error ? html`<div class="callout danger">${props.error}</div>` : nothing}
+      ${
+        props.error
+          ? html`<div class="callout danger" style="display:flex;align-items:flex-start;gap:10px;justify-content:space-between;">
+              <span>${props.error}</span>
+              ${
+                props.onGoToOrgSettings
+                  ? html`<button
+                      class="btn btn--sm"
+                      style="flex-shrink:0;"
+                      @click=${props.onGoToOrgSettings}
+                    >Go to Settings</button>`
+                  : nothing
+              }
+            </div>`
+          : nothing
+      }
 
       ${
         props.focusMode
@@ -423,6 +530,16 @@ export function renderChat(props: ChatProps) {
 
       <div class="chat-compose">
         ${renderAttachmentPreview(props)}
+        <input
+          ${ref((el) => {
+            fileInputRef = (el as HTMLInputElement | null) ?? null;
+          })}
+          type="file"
+          accept="image/*,.pdf,.txt,.doc,.docx,.csv,.xlsx,.xls,.pptx,.md,.json"
+          multiple
+          style="display:none"
+          @change=${(e: Event) => handleFileSelect(e, props)}
+        />
         <div class="chat-compose__row">
           <label class="field chat-compose__field">
             <span>Message</span>
@@ -430,7 +547,7 @@ export function renderChat(props: ChatProps) {
               ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
               .value=${props.draft}
               dir=${detectTextDirection(props.draft)}
-              ?disabled=${!props.connected}
+              ?disabled=${chatBlocked}
               @keydown=${(e: KeyboardEvent) => {
                 if (e.key !== "Enter") {
                   return;
@@ -441,7 +558,7 @@ export function renderChat(props: ChatProps) {
                 if (e.shiftKey) {
                   return;
                 } // Allow Shift+Enter for line breaks
-                if (!props.connected) {
+                if (chatBlocked) {
                   return;
                 }
                 e.preventDefault();
@@ -460,6 +577,15 @@ export function renderChat(props: ChatProps) {
           </label>
           <div class="chat-compose__actions">
             <button
+              class="btn chat-compose__attach-btn"
+              type="button"
+              title="Attach files"
+              ?disabled=${chatBlocked}
+              @click=${() => fileInputRef?.click()}
+            >
+              ${icons.paperclip}
+            </button>
+            <button
               class="btn"
               ?disabled=${!props.connected || (!canAbort && props.sending)}
               @click=${canAbort ? props.onAbort : props.onNewSession}
@@ -468,7 +594,7 @@ export function renderChat(props: ChatProps) {
             </button>
             <button
               class="btn primary"
-              ?disabled=${!props.connected}
+              ?disabled=${chatBlocked}
               @click=${props.onSend}
             >
               ${isBusy ? "Queue" : "Send"}<kbd class="btn-kbd">↵</kbd>

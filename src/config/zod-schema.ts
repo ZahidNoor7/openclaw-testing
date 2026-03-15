@@ -886,7 +886,43 @@ export const OpenClawSchema = z
                 name: z.string(),
                 description: z.string().optional(),
                 createdAt: z.string().optional(),
+                /** @deprecated Use providerKeys instead. */
                 openaiApiKey: z.string().optional().register(sensitive),
+                status: z.enum(["active", "suspended"]).optional(),
+                // Named `providerKeys` (not `apiKeys`) to avoid the
+                // `/api.?key/i` sensitive-path guesser over-redacting
+                // non-secret fields like id, provider, label.
+                providerKeys: z
+                  .array(
+                    z
+                      .object({
+                        id: z.string(),
+                        provider: z.string(),
+                        label: z.string().optional(),
+                        key: z.string().register(sensitive),
+                        enabled: z.boolean(),
+                        createdAt: z.string().optional(),
+                      })
+                      .strict(),
+                  )
+                  .optional(),
+                // @deprecated alias kept so existing configs with `apiKeys`
+                // continue to pass schema validation. New saves always use
+                // `providerKeys`. The UI reads from both fields.
+                apiKeys: z
+                  .array(
+                    z
+                      .object({
+                        id: z.string(),
+                        provider: z.string(),
+                        label: z.string().optional(),
+                        key: z.string().register(sensitive),
+                        enabled: z.boolean(),
+                        createdAt: z.string().optional(),
+                      })
+                      .strict(),
+                  )
+                  .optional(),
               })
               .strict(),
           )

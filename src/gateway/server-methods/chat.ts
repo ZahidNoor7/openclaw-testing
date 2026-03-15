@@ -9,6 +9,7 @@ import { createReplyDispatcher } from "../../auto-reply/reply/reply-dispatcher.j
 import type { MsgContext } from "../../auto-reply/templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
+import { applyActiveOrgApiKey, applyOrgApiKeyById } from "../../config/organizations.js";
 import { resolveSessionFilePath } from "../../config/sessions.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
 import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
@@ -1080,8 +1081,17 @@ export const chatHandlers: GatewayRequestHandlers = {
         sessionKey,
         config: cfg,
       });
+      // Apply org-specific provider keys so each tenant uses their own key.
+      // If the agent has an explicit organizationId, use that org's keys.
+      // Otherwise fall back to the active org's keys so that agents without an
+      // explicit org assignment still get isolated keys when an org is active —
+      // this prevents the global OPENAI_API_KEY env var from leaking through.
+      const agentOrgId = (cfg.agents?.list ?? []).find((a) => a.id === agentId)?.organizationId;
+      const scopedCfg = agentOrgId
+        ? applyOrgApiKeyById(cfg, agentOrgId)
+        : applyActiveOrgApiKey(cfg);
       const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
-        cfg,
+        cfg: scopedCfg,
         agentId,
         channel: INTERNAL_MESSAGE_CHANNEL,
       });
@@ -1106,7 +1116,7 @@ export const chatHandlers: GatewayRequestHandlers = {
       let agentRunStarted = false;
       void dispatchInboundMessage({
         ctx,
-        cfg,
+        cfg: scopedCfg,
         dispatcher,
         replyOptions: {
           runId: clientRunId,

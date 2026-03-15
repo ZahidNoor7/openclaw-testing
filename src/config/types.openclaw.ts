@@ -28,6 +28,21 @@ import type { SecretsConfig } from "./types.secrets.js";
 import type { SkillsConfig } from "./types.skills.js";
 import type { ToolsConfig } from "./types.tools.js";
 
+export type OrgApiKey = {
+  /** Unique key identifier (auto-generated UUID). */
+  id: string;
+  /** Provider slug, e.g. "openai", "anthropic", "gemini". */
+  provider: string;
+  /** Optional user-friendly label. */
+  label?: string;
+  /** The actual API key value. */
+  key: string;
+  /** Whether this key is currently enabled. */
+  enabled: boolean;
+  /** ISO timestamp when this key was added. */
+  createdAt?: string;
+};
+
 export type OrganizationConfig = {
   /** Unique organization identifier, e.g. "org_acme". */
   id: string;
@@ -37,8 +52,23 @@ export type OrganizationConfig = {
   description?: string;
   /** ISO timestamp when this organization was created. */
   createdAt?: string;
-  /** Optional org-specific OpenAI API key. */
+  /** @deprecated Use apiKeys instead. Kept for backwards compatibility. */
   openaiApiKey?: string;
+  /** Organization status for suspension management. */
+  status?: "active" | "suspended";
+  /**
+   * Multiple API keys for different LLM providers.
+   * Named `providerKeys` (not `apiKeys`) to avoid the `/api.?key/i` sensitive-
+   * path pattern guesser redacting all string fields in the entry, not just
+   * the `key` field.
+   */
+  providerKeys?: OrgApiKey[];
+  /**
+   * @deprecated Renamed to `providerKeys`. Kept in schema so existing configs
+   * pass validation. The UI reads from both fields and writes only to
+   * `providerKeys`.
+   */
+  apiKeys?: OrgApiKey[];
 };
 
 export type OpenClawConfig = {

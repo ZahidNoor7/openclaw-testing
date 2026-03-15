@@ -1,6 +1,12 @@
 import { LitElement } from "lit";
 import { customElement, state } from "lit/decorators.js";
+import type { OrgApiKey } from "../../../src/config/types.openclaw.js";
 import { i18n, I18nController, isSupportedLocale } from "../i18n/index.ts";
+import {
+  handleLogin as handleLoginInternal,
+  handleLogout as handleLogoutInternal,
+  handleRegister as handleRegisterInternal,
+} from "./app-auth.ts";
 import {
   handleChannelConfigReload as handleChannelConfigReloadInternal,
   handleChannelConfigSave as handleChannelConfigSaveInternal,
@@ -52,6 +58,7 @@ import {
 } from "./app-tool-stream.ts";
 import type { AppViewState } from "./app-view-state.ts";
 import { normalizeAssistantIdentity } from "./assistant-identity.ts";
+import type { AppAuthSession } from "./auth-storage.ts";
 import { loadAssistantIdentity as loadAssistantIdentityInternal } from "./controllers/assistant-identity.ts";
 import type { CronFieldErrors } from "./controllers/cron.ts";
 import type { DevicePairingList } from "./controllers/devices.ts";
@@ -119,6 +126,22 @@ export class OpenClawApp extends LitElement {
       void i18n.setLocale(this.settings.locale);
     }
   }
+  @state() appAuth: AppAuthSession | null = null;
+  @state() appAuthChecked = false;
+  @state() loginEmail = "";
+  @state() loginPassword = "";
+  @state() loginError: string | null = null;
+  @state() loginLoading = false;
+  @state() onboardingOrgName = "";
+  @state() onboardingAdminName = "";
+  @state() onboardingEmail = "";
+  @state() onboardingPassword = "";
+  @state() onboardingError: string | null = null;
+  @state() onboardingLoading = false;
+  @state() orgUsersByOrg: Record<
+    string,
+    Array<{ id: string; email: string; displayName: string; status: string; role: string }>
+  > = {};
   @state() password = "";
   @state() tab: Tab = "chat";
   @state() onboarding = resolveOnboardingMode();
@@ -258,7 +281,6 @@ export class OpenClawApp extends LitElement {
   @state() orgCreateName = "";
   @state() orgCreateId = "";
   @state() orgCreateDescription = "";
-  @state() orgCreateOpenAiKey = "";
   @state() orgSaving = false;
   @state() orgLastError: string | null = null;
   @state() orgSwitching = false;
@@ -267,7 +289,21 @@ export class OpenClawApp extends LitElement {
   @state() orgEditingId: string | null = null;
   @state() orgEditName = "";
   @state() orgEditDescription = "";
-  @state() orgEditOpenAiKey = "";
+  // Multi-key management
+  @state() orgCreateApiKeys: OrgApiKey[] = [];
+  @state() orgCreateApiKeyProvider = "openai";
+  @state() orgCreateApiKeyLabel = "";
+  @state() orgCreateApiKeyValue = "";
+  @state() orgCreateApiKeyShowValue = false;
+  @state() orgEditApiKeyProvider = "openai";
+  @state() orgEditApiKeyLabel = "";
+  @state() orgEditApiKeyValue = "";
+  @state() orgEditApiKeyShowValue = false;
+  @state() orgKeyShowIds: Set<string> = new Set();
+  @state() orgReplaceKeyId: string | null = null;
+  @state() orgReplaceKeyValue = "";
+  @state() orgReplaceKeyShowValue = false;
+  @state() expandedUsersOrgId: string | null = null;
 
   @state() sessionsLoading = false;
   @state() sessionsResult: SessionsListResult | null = null;
@@ -648,6 +684,114 @@ export class OpenClawApp extends LitElement {
     const newRatio = Math.max(0.4, Math.min(0.7, ratio));
     this.splitRatio = newRatio;
     this.applySettings({ ...this.settings, splitRatio: newRatio });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Auth methods
+  // ---------------------------------------------------------------------------
+
+  setLoginEmail(v: string) {
+    this.loginEmail = v;
+  }
+
+  setLoginPassword(v: string) {
+    this.loginPassword = v;
+  }
+
+  setOnboardingOrgName(v: string) {
+    this.onboardingOrgName = v;
+  }
+
+  setOnboardingAdminName(v: string) {
+    this.onboardingAdminName = v;
+  }
+
+  setOnboardingEmail(v: string) {
+    this.onboardingEmail = v;
+  }
+
+  setOnboardingPassword(v: string) {
+    this.onboardingPassword = v;
+  }
+
+  async handleLogin() {
+    await handleLoginInternal(this as unknown as Parameters<typeof handleLoginInternal>[0]);
+  }
+
+  async handleLogout() {
+    await handleLogoutInternal(this as unknown as Parameters<typeof handleLogoutInternal>[0]);
+  }
+
+  async handleRegister() {
+    await handleRegisterInternal(this as unknown as Parameters<typeof handleRegisterInternal>[0]);
+  }
+
+  async handleLoadOrgUsers(orgId: string) {
+    try {
+      const base = this.settings.gatewayUrl
+        .replace(/^wss?:/, (p) => (p === "wss:" ? "https:" : "http:"))
+        .replace(/\/+$/, "");
+      const res = await fetch(`${base}/__auth/users?orgId=${encodeURIComponent(orgId)}`, {
+        headers: this.appAuth ? { Authorization: `Bearer ${this.appAuth.token}` } : {},
+      });
+      if (res.ok) {
+        const data = (await res.json()) as {
+          users: Array<{
+            id: string;
+            email: string;
+            displayName: string;
+            status: string;
+            role: string;
+          }>;
+        };
+        this.orgUsersByOrg = { ...this.orgUsersByOrg, [orgId]: data.users };
+      }
+    } catch {
+      // Ignore — user list is optional
+    }
+  }
+
+  async handleOrgStatusChange(orgId: string, status: "active" | "suspended") {
+    try {
+      const base = this.settings.gatewayUrl
+        .replace(/^wss?:/, (p) => (p === "wss:" ? "https:" : "http:"))
+        .replace(/\/+$/, "");
+      await fetch(`${base}/__auth/orgs/${encodeURIComponent(orgId)}/status`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          ...(this.appAuth ? { Authorization: `Bearer ${this.appAuth.token}` } : {}),
+        },
+        body: JSON.stringify({ status }),
+      });
+      // Reload config snapshot.
+      if (this.client) {
+        void this.loadOverview();
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
+  async handleRegenerateApiKey() {
+    try {
+      const base = this.settings.gatewayUrl
+        .replace(/^wss?:/, (p) => (p === "wss:" ? "https:" : "http:"))
+        .replace(/\/+$/, "");
+      const res = await fetch(`${base}/__auth/api-keys/regenerate`, {
+        method: "POST",
+        headers: this.appAuth ? { Authorization: `Bearer ${this.appAuth.token}` } : {},
+      });
+      if (res.ok && this.appAuth) {
+        const data = (await res.json()) as { apiKey: string };
+        const updated = { ...this.appAuth, apiKey: data.apiKey };
+        this.appAuth = updated;
+        const { saveAppAuth } = await import("./auth-storage.ts");
+        saveAppAuth(updated);
+      }
+    } catch {
+      // Ignore
+    }
   }
 
   render() {
