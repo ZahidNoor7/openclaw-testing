@@ -10,8 +10,10 @@ import type { MsgContext } from "../../auto-reply/templating.js";
 import { isSilentReplyText, SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import { createReplyPrefixOptions } from "../../channels/reply-prefix.js";
 import { applyActiveOrgApiKey, applyOrgApiKeyById } from "../../config/organizations.js";
+import { resolveStateDir } from "../../config/paths.js";
 import { resolveSessionFilePath } from "../../config/sessions.js";
 import { jsonUtf8Bytes } from "../../infra/json-utf8-bytes.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import { normalizeInputProvenance, type InputProvenance } from "../../sessions/input-provenance.js";
 import { resolveSendPolicy } from "../../sessions/send-policy.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
@@ -33,6 +35,12 @@ import {
   resolveChatRunExpiresAtMs,
 } from "../chat-abort.js";
 import { type ChatImageContent, parseMessageWithAttachments } from "../chat-attachments.js";
+import {
+  injectSavedImageUrls,
+  inlineImagesToUrls,
+  recordChatMessageImages,
+  saveChatImageSync,
+} from "../chat-image-store.js";
 import { stripEnvelopeFromMessage, stripEnvelopeFromMessages } from "../chat-sanitize.js";
 import {
   GATEWAY_CLIENT_CAPS,
@@ -740,7 +748,7 @@ function broadcastChatError(params: {
 }
 
 export const chatHandlers: GatewayRequestHandlers = {
-  "chat.history": async ({ params, respond, context }) => {
+  "chat.history": async ({ params, respond, context, client }) => {
     if (!validateChatHistoryParams(params)) {
       respond(
         false,
@@ -757,6 +765,29 @@ export const chatHandlers: GatewayRequestHandlers = {
       limit?: number;
     };
     const { cfg, storePath, entry } = loadSessionEntry(sessionKey);
+
+    // Enforce org ownership: if the client is authenticated with an orgId, verify
+    // that the session's agent belongs to the same org (or is a global agent).
+    // Single-user mode (client.orgId undefined) skips this check — all sessions accessible.
+    if (client?.orgId) {
+      const parsed = parseAgentSessionKey(sessionKey);
+      if (parsed) {
+        const agentId = normalizeAgentId(parsed.agentId);
+        const agent = (cfg.agents?.list ?? []).find(
+          (a) => a?.id && normalizeAgentId(a.id) === agentId,
+        );
+        const agentOrgId = agent?.organizationId;
+        // Deny access if agent belongs to a different org; global agents (no organizationId) are allowed
+        if (agentOrgId && agentOrgId !== client.orgId) {
+          respond(
+            false,
+            undefined,
+            errorShape(ErrorCodes.FORBIDDEN, "chat.history: session does not belong to your org"),
+          );
+          return;
+        }
+      }
+    }
     const sessionId = entry?.sessionId;
     const rawMessages =
       sessionId && storePath ? readSessionMessages(sessionId, storePath, entry?.sessionFile) : [];
@@ -767,10 +798,17 @@ export const chatHandlers: GatewayRequestHandlers = {
     const sliced = rawMessages.length > max ? rawMessages.slice(-max) : rawMessages;
     const sanitized = stripEnvelopeFromMessages(sliced);
     const normalized = sanitizeChatHistoryMessages(sanitized);
+    const stateDir = resolveStateDir();
+    // Safety-net: if any inline base64 image blocks survived pruning, save them now.
+    const afterInline = inlineImagesToUrls(normalized, stateDir);
+    // Primary path: inject URL blocks for images saved at send time (before agent pruning).
+    const withImageUrls = sessionId
+      ? injectSavedImageUrls(afterInline, sessionId, stateDir)
+      : afterInline;
     const maxHistoryBytes = getMaxChatHistoryMessagesBytes();
     const perMessageHardCap = Math.min(CHAT_HISTORY_MAX_SINGLE_MESSAGE_BYTES, maxHistoryBytes);
     const replaced = replaceOversizedChatHistoryMessages({
-      messages: normalized,
+      messages: withImageUrls,
       maxSingleMessageBytes: perMessageHardCap,
     });
     const capped = capArrayByJsonBytes(replaced.messages, maxHistoryBytes).items;
@@ -958,6 +996,30 @@ export const chatHandlers: GatewayRequestHandlers = {
     }
     const rawSessionKey = p.sessionKey;
     const { cfg, entry, canonicalKey: sessionKey } = loadSessionEntry(rawSessionKey);
+
+    // Save images at send time so they persist after the agent prunes image
+    // blocks from the session transcript (pruneProcessedHistoryImages in attempt.ts).
+    if (parsedImages.length > 0 && entry?.sessionId) {
+      try {
+        const stateDir = resolveStateDir();
+        const imageIds = parsedImages.map((img) =>
+          saveChatImageSync({
+            data: Buffer.from(img.data, "base64"),
+            mimeType: img.mimeType,
+            stateDir,
+          }),
+        );
+        recordChatMessageImages({
+          sessionId: entry.sessionId,
+          messageText: parsedMessage,
+          imageIds,
+          stateDir,
+        });
+      } catch (err) {
+        context.logGateway.warn(`chat.send: image persist failed: ${String(err)}`);
+      }
+    }
+
     const timeoutMs = resolveAgentTimeoutMs({
       cfg,
       overrideMs: p.timeoutMs,
@@ -1082,14 +1144,48 @@ export const chatHandlers: GatewayRequestHandlers = {
         config: cfg,
       });
       // Apply org-specific provider keys so each tenant uses their own key.
-      // If the agent has an explicit organizationId, use that org's keys.
-      // Otherwise fall back to the active org's keys so that agents without an
-      // explicit org assignment still get isolated keys when an org is active —
-      // this prevents the global OPENAI_API_KEY env var from leaking through.
+      // Priority: agent's explicit organizationId > authenticated client's orgId
+      // > global active org (single-user / no-org mode).
+      // When client.orgId is defined (tenant session), always use that org's
+      // keys — never fall back to organizations.activeId which could belong to
+      // a different tenant.
       const agentOrgId = (cfg.agents?.list ?? []).find((a) => a.id === agentId)?.organizationId;
-      const scopedCfg = agentOrgId
-        ? applyOrgApiKeyById(cfg, agentOrgId)
+      const resolvedOrgId = agentOrgId ?? client?.orgId;
+      const scopedCfg = resolvedOrgId
+        ? applyOrgApiKeyById(cfg, resolvedOrgId)
         : applyActiveOrgApiKey(cfg);
+
+      // When the client is authenticated as a specific org tenant, verify that
+      // an LLM provider key is actually configured for that org. Return a
+      // structured, machine-readable error so the frontend can display the
+      // correct user-facing message and disable chat input until the key is set.
+      if (client?.orgId && scopedCfg === cfg) {
+        // scopedCfg === cfg means applyOrgApiKeyById returned the config
+        // unchanged — no enabled provider keys are configured for this org.
+        const structuredError = {
+          code: "NO_API_KEY" as const,
+          message: `No LLM provider key is configured for organization "${client.orgId}". Please add a provider key in the organization settings.`,
+        };
+        const error = errorShape(ErrorCodes.UNAVAILABLE, structuredError.message);
+        const payload = {
+          runId: clientRunId,
+          status: "error" as const,
+          summary: structuredError.message,
+          error: structuredError,
+        };
+        setGatewayDedupeEntry({
+          dedupe: context.dedupe,
+          key: `chat:${clientRunId}`,
+          entry: {
+            ts: Date.now(),
+            ok: false,
+            payload,
+            error,
+          },
+        });
+        respond(false, payload, error, { runId: clientRunId });
+        return;
+      }
       const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
         cfg: scopedCfg,
         agentId,

@@ -283,4 +283,26 @@ describe("chat view", () => {
     expect(senderLabels).toContain("Iris");
     expect(senderLabels).toContain("Joaquin De Rojas");
   });
+
+  it("renders attachment preview inside the compose field", () => {
+    const container = document.createElement("div");
+    render(
+      renderChat(
+        createProps({
+          attachments: [
+            {
+              id: "att-1",
+              dataUrl: "data:image/png;base64,AA==",
+              mimeType: "image/png",
+              fileName: "test.png",
+            },
+          ],
+        }),
+      ),
+      container,
+    );
+
+    const preview = container.querySelector(".chat-compose__input .chat-attachments--inline");
+    expect(preview).not.toBeNull();
+  });
 });

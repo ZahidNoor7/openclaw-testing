@@ -97,6 +97,8 @@ type GatewayHost = {
   execApprovalQueue: ExecApprovalRequest[];
   execApprovalError: string | null;
   updateAvailable: UpdateAvailable | null;
+  /** App-level auth session — used to pass session token for org resolution. */
+  appAuth?: { token: string; orgId: string; role: string } | null;
 };
 
 type SessionDefaultsSnapshot = {
@@ -202,6 +204,7 @@ export function connectGateway(host: GatewayHost) {
     url: host.settings.gatewayUrl,
     token: host.settings.token.trim() ? host.settings.token : undefined,
     password: host.password.trim() ? host.password : undefined,
+    sessionToken: host.appAuth?.role === "tenant_admin" ? host.appAuth.token : undefined,
     clientName: "openclaw-control-ui",
     clientVersion,
     mode: "webchat",

@@ -122,6 +122,8 @@ export type GatewayBrowserClientOptions = {
   url: string;
   token?: string;
   password?: string;
+  /** HTTP session token for resolving tenant orgId on the backend. */
+  sessionToken?: string;
   clientName?: GatewayClientName;
   clientVersion?: string;
   platform?: string;
@@ -264,11 +266,12 @@ export class GatewayBrowserClient {
     }
     authToken = explicitGatewayToken ?? deviceToken;
     const auth =
-      authToken || this.opts.password
+      authToken || this.opts.password || this.opts.sessionToken
         ? {
             token: authToken,
             deviceToken,
             password: this.opts.password,
+            sessionToken: this.opts.sessionToken,
           }
         : undefined;
 

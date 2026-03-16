@@ -50,6 +50,11 @@ export type OrganizationsProps = {
   createName: string;
   createId: string;
   createDescription: string;
+  /** Admin account fields for new org */
+  createAdminName: string;
+  createEmail: string;
+  createPassword: string;
+  createPasswordShow: boolean;
   /** Multi-key state for create form */
   createApiKeys: OrgApiKey[];
   createApiKeyProvider: string;
@@ -78,11 +83,22 @@ export type OrganizationsProps = {
   onCreateNameChange: (val: string) => void;
   onCreateIdChange: (val: string) => void;
   onCreateDescriptionChange: (val: string) => void;
+  onCreateAdminNameChange: (val: string) => void;
+  onCreateEmailChange: (val: string) => void;
+  onCreatePasswordChange: (val: string) => void;
+  onCreatePasswordToggleShow: () => void;
   onCreate: () => void;
   onEditStart: (org: OrganizationConfig) => void;
   onEditCancel: () => void;
   onEditNameChange: (val: string) => void;
   onEditDescriptionChange: (val: string) => void;
+  /** Admin credentials for the org being edited */
+  editAdminEmail: string;
+  editAdminPassword: string;
+  editAdminPasswordShow: boolean;
+  onEditAdminEmailChange: (val: string) => void;
+  onEditAdminPasswordChange: (val: string) => void;
+  onEditAdminPasswordToggleShow: () => void;
   onUpdate: () => void;
   // Multi-key callbacks — create form
   onCreateApiKeyProviderChange: (val: string) => void;
@@ -120,6 +136,46 @@ export type OrganizationsProps = {
   onActivateOrg: (orgId: string) => void;
   onSuspendOrg: (orgId: string) => void;
 };
+
+function eyeIcon(open: boolean) {
+  return open
+    ? html`
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          style="display: block"
+        >
+          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
+          <circle cx="12" cy="12" r="3" />
+        </svg>
+      `
+    : html`
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          width="14"
+          height="14"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2.5"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          style="display: block"
+        >
+          <path
+            d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"
+          />
+          <line x1="1" y1="1" x2="23" y2="23" />
+        </svg>
+      `;
+}
 
 function slugify(name: string): string {
   return (
@@ -310,6 +366,19 @@ export function renderOrganizations(props: OrganizationsProps) {
         font-size: 11px;
         color: var(--text-muted, var(--muted));
         font-weight: 500;
+      }
+      .org-create-section-label {
+        font-size: 11px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+        color: var(--muted-foreground, #888);
+        margin-bottom: 10px;
+      }
+      .org-create-divider {
+        border: none;
+        border-top: 1px solid var(--border, #262626);
+        margin: 14px 0;
       }
       .org-create-footer {
         margin-top: 14px;
@@ -1124,6 +1193,8 @@ function renderEditPanel(props: OrganizationsProps, org: OrganizationConfig) {
   return html`
     <div class="org-edit-panel">
       <div class="org-edit-title">Edit Organization</div>
+
+      <div class="org-create-section-label" style="margin-top:0;">Organization</div>
       <div class="org-edit-grid">
         <div class="org-edit-field">
           <label class="org-edit-label">Name *</label>
@@ -1147,8 +1218,44 @@ function renderEditPanel(props: OrganizationsProps, org: OrganizationConfig) {
         </div>
       </div>
 
+      <hr class="org-create-divider" />
+      <div class="org-create-section-label">Admin credentials</div>
+      <div class="org-edit-grid">
+        <div class="org-edit-field">
+          <label class="org-edit-label">Email</label>
+          <input
+            class="input"
+            type="email"
+            placeholder="Leave blank to keep current"
+            .value=${props.editAdminEmail}
+            @input=${(e: Event) => props.onEditAdminEmailChange((e.target as HTMLInputElement).value)}
+            autocomplete="email"
+          />
+        </div>
+        <div class="org-edit-field">
+          <label class="org-edit-label">New password</label>
+          <div style="position:relative;">
+            <input
+              class="input"
+              type=${props.editAdminPasswordShow ? "text" : "password"}
+              placeholder="Leave blank to keep current"
+              .value=${props.editAdminPassword}
+              @input=${(e: Event) => props.onEditAdminPasswordChange((e.target as HTMLInputElement).value)}
+              autocomplete="new-password"
+              style="padding-right:36px;"
+            />
+            <button
+              type="button"
+              @click=${props.onEditAdminPasswordToggleShow}
+              style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--muted-foreground,#888);padding:2px 4px;display:flex;align-items:center;"
+              title=${props.editAdminPasswordShow ? "Hide password" : "Show password"}
+            >${eyeIcon(!props.editAdminPasswordShow)}</button>
+          </div>
+        </div>
+      </div>
+
       <!-- API Keys management -->
-      <div class="keys-section">
+      <div class="keys-section" style="margin-top:14px;">
         <div class="keys-section-title">API Keys</div>
         ${renderKeyList(apiKeys, props, org.id, { allowToggle: true, allowDelete: true })}
         ${renderAddKeyForm(props, "edit", org.id)}
@@ -1172,7 +1279,20 @@ function renderEditPanel(props: OrganizationsProps, org: OrganizationConfig) {
 
 function renderCreateForm(props: OrganizationsProps) {
   const hasInput =
-    props.createName || props.createId || props.createDescription || props.createApiKeys.length > 0;
+    props.createName ||
+    props.createId ||
+    props.createDescription ||
+    props.createAdminName ||
+    props.createEmail ||
+    props.createPassword ||
+    props.createApiKeys.length > 0;
+
+  const canSubmit =
+    !!props.createName.trim() &&
+    !!props.createAdminName.trim() &&
+    !!props.createEmail.trim() &&
+    props.createPassword.length >= 8 &&
+    !props.saving;
 
   return html`
     <div class="org-create-card">
@@ -1180,15 +1300,18 @@ function renderCreateForm(props: OrganizationsProps) {
         <span style="opacity:0.5;font-size:16px;">+</span>
         New Organization
       </div>
+
+      <div class="org-create-section-label">Organization</div>
       <div class="org-create-grid">
         <div class="org-create-field">
-          <label class="org-create-label">Name *</label>
+          <label class="org-create-label">Organization name *</label>
           <input
             class="input"
             type="text"
-            placeholder="e.g. Acme Corp"
+            placeholder="Acme Corp"
             .value=${props.createName}
             @input=${(e: Event) => props.onCreateNameChange((e.target as HTMLInputElement).value)}
+            autocomplete="organization"
           />
         </div>
         <div class="org-create-field">
@@ -1213,6 +1336,53 @@ function renderCreateForm(props: OrganizationsProps) {
         </div>
       </div>
 
+      <hr class="org-create-divider" />
+      <div class="org-create-section-label">Admin account</div>
+      <div class="org-create-grid">
+        <div class="org-create-field">
+          <label class="org-create-label">Your name *</label>
+          <input
+            class="input"
+            type="text"
+            placeholder="Jane Smith"
+            .value=${props.createAdminName}
+            @input=${(e: Event) => props.onCreateAdminNameChange((e.target as HTMLInputElement).value)}
+            autocomplete="name"
+          />
+        </div>
+        <div class="org-create-field">
+          <label class="org-create-label">Email *</label>
+          <input
+            class="input"
+            type="email"
+            placeholder="jane@acme.com"
+            .value=${props.createEmail}
+            @input=${(e: Event) => props.onCreateEmailChange((e.target as HTMLInputElement).value)}
+            autocomplete="email"
+          />
+        </div>
+        <div class="org-create-field org-create-field--full">
+          <label class="org-create-label">Password *</label>
+          <div style="position:relative;">
+            <input
+              class="input"
+              type=${props.createPasswordShow ? "text" : "password"}
+              placeholder="Min. 8 characters"
+              .value=${props.createPassword}
+              @input=${(e: Event) => props.onCreatePasswordChange((e.target as HTMLInputElement).value)}
+              autocomplete="new-password"
+              style="padding-right:40px;"
+            />
+            <button
+              type="button"
+              @click=${props.onCreatePasswordToggleShow}
+              style="position:absolute;right:8px;top:50%;transform:translateY(-50%);background:none;border:none;cursor:pointer;color:var(--muted-foreground,#888);padding:2px 4px;display:flex;align-items:center;"
+              title=${props.createPasswordShow ? "Hide password" : "Show password"}
+            >${eyeIcon(!props.createPasswordShow)}</button>
+          </div>
+        </div>
+      </div>
+
       <!-- API Keys for new org -->
       <div class="keys-section" style="margin-top:14px;">
         <div class="keys-section-title">API Keys (optional)</div>
@@ -1227,7 +1397,7 @@ function renderCreateForm(props: OrganizationsProps) {
       <div class="org-create-footer">
         <button
           class="btn btn-primary"
-          ?disabled=${!props.createName.trim() || props.saving}
+          ?disabled=${!canSubmit}
           @click=${props.onCreate}
         >${props.saving ? "Creating…" : "Create Organization"}</button>
         ${
@@ -1238,6 +1408,9 @@ function renderCreateForm(props: OrganizationsProps) {
                 props.onCreateNameChange("");
                 props.onCreateIdChange("");
                 props.onCreateDescriptionChange("");
+                props.onCreateAdminNameChange("");
+                props.onCreateEmailChange("");
+                props.onCreatePasswordChange("");
                 for (const k of props.createApiKeys) {
                   props.onCreateApiKeyRemove(k.id);
                 }

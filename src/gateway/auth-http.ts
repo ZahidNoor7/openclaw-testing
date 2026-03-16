@@ -9,6 +9,7 @@
  *   GET  /__auth/users        — list users (super_admin only)
  *   PATCH /__auth/orgs/:orgId/status  — activate/suspend org (super_admin only)
  *   POST /__auth/api-keys/regenerate  — regenerate tenant API key
+ *   GET  /__auth/api-key/status       — check key status (masked only, never raw)
  *
  * These endpoints do NOT require the gateway WS auth token. They operate
  * before WebSocket connection is established.
@@ -31,6 +32,7 @@ import {
   listAllUsers,
   listUsersByOrg,
   regenerateTenantApiKey,
+  updateUserCredentials,
   verifyPassword,
 } from "../infra/auth-db.js";
 import type { AuthUserRole } from "../infra/auth-db.js";
@@ -40,6 +42,31 @@ import { getBearerToken } from "./http-utils.js";
 
 const MAX_AUTH_BODY_BYTES = 64 * 1024; // 64 KB — credentials are small
 const AUTH_PATH_PREFIX = "/__auth/";
+
+// ---------------------------------------------------------------------------
+// Key masking
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns a masked representation of an API key showing only the last 4 chars.
+ * e.g. "sk-abc123ab3f" → "sk-...ab3f"
+ * Returns undefined if no key is provided.
+ */
+function maskKey(key: string | undefined | null): string | undefined {
+  if (!key) {
+    return undefined;
+  }
+  const suffix = key.slice(-4);
+  return `sk-...${suffix}`;
+}
+
+/**
+ * Converts a raw API key into the safe response shape.
+ * Never includes the raw key value.
+ */
+function maskApiKey(key: string | undefined): { configured: boolean; masked?: string } {
+  return { configured: !!key, masked: maskKey(key) };
+}
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -184,7 +211,7 @@ async function handleLogin(req: IncomingMessage, res: ServerResponse): Promise<v
   }
 
   const session = createSession(user.id, user.orgId, user.role);
-  const apiKey = user.role === "tenant_admin" ? getOrCreateTenantApiKey(user.orgId) : undefined;
+  const rawApiKey = user.role === "tenant_admin" ? getOrCreateTenantApiKey(user.orgId) : undefined;
 
   sendJson(res, 200, {
     token: session.id,
@@ -197,7 +224,8 @@ async function handleLogin(req: IncomingMessage, res: ServerResponse): Promise<v
     },
     orgId: user.orgId,
     role: user.role,
-    apiKey,
+    // Only include apiKey field for tenant_admin; super_admin has no per-org key.
+    ...(user.role === "tenant_admin" ? { apiKey: maskApiKey(rawApiKey) } : {}),
   });
 }
 
@@ -262,7 +290,7 @@ async function handleRegister(req: IncomingMessage, res: ServerResponse): Promis
 
     const user = await createUser(email, password, "tenant_admin", uniqueId, adminName);
     const session = createSession(user.id, uniqueId, "tenant_admin");
-    const apiKey = getOrCreateTenantApiKey(uniqueId);
+    const rawApiKey = getOrCreateTenantApiKey(uniqueId);
     sendJson(res, 201, {
       token: session.id,
       user: {
@@ -273,7 +301,7 @@ async function handleRegister(req: IncomingMessage, res: ServerResponse): Promis
         displayName: user.displayName,
       },
       orgId: uniqueId,
-      apiKey,
+      apiKey: maskApiKey(rawApiKey),
     });
     return;
   }
@@ -296,13 +324,13 @@ async function handleRegister(req: IncomingMessage, res: ServerResponse): Promis
 
   const user = await createUser(email, password, "tenant_admin", orgId, adminName);
   const session = createSession(user.id, orgId, "tenant_admin");
-  const apiKey = getOrCreateTenantApiKey(orgId);
+  const rawApiKey = getOrCreateTenantApiKey(orgId);
 
   sendJson(res, 201, {
     token: session.id,
     user: { id: user.id, email: user.email, role: user.role, orgId, displayName: user.displayName },
     orgId,
-    apiKey,
+    apiKey: maskApiKey(rawApiKey),
   });
 }
 
@@ -343,7 +371,7 @@ function handleMe(req: IncomingMessage, res: ServerResponse): void {
     sendJson(res, 403, { error: "account_suspended" });
     return;
   }
-  const apiKey = user.role === "tenant_admin" ? getOrCreateTenantApiKey(user.orgId) : undefined;
+  const rawApiKey = user.role === "tenant_admin" ? getOrCreateTenantApiKey(user.orgId) : undefined;
   sendJson(res, 200, {
     user: {
       id: user.id,
@@ -354,7 +382,8 @@ function handleMe(req: IncomingMessage, res: ServerResponse): void {
     },
     orgId: user.orgId,
     role: user.role,
-    apiKey,
+    // Only include apiKey field for tenant_admin; super_admin has no per-org key.
+    ...(user.role === "tenant_admin" ? { apiKey: maskApiKey(rawApiKey) } : {}),
   });
 }
 
@@ -425,7 +454,9 @@ async function handleOrgStatus(
     return;
   }
 
-  const updatedList = orgList.map((o, i) => (i === orgIndex ? { ...o, status: status } : o));
+  const updatedList: OrganizationConfig[] = orgList.map((o, i) =>
+    i === orgIndex ? { ...o, status: status } : o,
+  );
 
   await writeConfigFile({
     ...config,
@@ -440,6 +471,132 @@ async function handleOrgStatus(
   sendJson(res, 200, { ok: true });
 }
 
+/** POST /__auth/admin/orgs — super admin creates org + tenant admin user. */
+async function handleAdminCreateOrg(req: IncomingMessage, res: ServerResponse): Promise<void> {
+  if (req.method !== "POST") {
+    sendJson(res, 405, { error: "method_not_allowed" });
+    return;
+  }
+  const caller = requireSuperAdmin(req, res);
+  if (!caller) {
+    return;
+  }
+
+  const body = await readJsonBody(req, MAX_AUTH_BODY_BYTES);
+  if (!body.ok) {
+    sendJson(res, 400, { error: "invalid_body" });
+    return;
+  }
+
+  const payload = body.value as Record<string, unknown>;
+  const orgName = validateString(payload["orgName"], 100);
+  const adminName = validateString(payload["adminName"], 100);
+  const email = validateEmail(payload["email"]);
+  const password = validateString(payload["password"], 1024);
+  const orgIdRaw = typeof payload["orgId"] === "string" ? payload["orgId"].trim() : null;
+  const description =
+    typeof payload["description"] === "string" ? payload["description"].trim() : null;
+
+  if (!orgName || !adminName || !email || !password) {
+    sendJson(res, 400, { error: "all_fields_required" });
+    return;
+  }
+
+  if (password.length < 8) {
+    sendJson(res, 400, { error: "password_too_short" });
+    return;
+  }
+
+  if (findUserByEmail(email)) {
+    sendJson(res, 409, { error: "email_exists" });
+    return;
+  }
+
+  const config = loadConfig();
+  const baseId = orgIdRaw || slugifyOrgName(orgName);
+  const existingOrg = findOrganization(config, baseId);
+  const finalOrgId = existingOrg ? `${baseId}_${Date.now().toString(36)}` : baseId;
+
+  const orgEntry: OrganizationConfig = {
+    id: finalOrgId,
+    name: orgName,
+    ...(description ? { description } : {}),
+    createdAt: new Date().toISOString(),
+    status: "active",
+  };
+
+  await writeConfigFile({
+    ...config,
+    organizations: {
+      ...config.organizations,
+      list: [...(config.organizations?.list ?? []), orgEntry],
+    },
+  });
+
+  await createUser(email, password, "tenant_admin", finalOrgId, adminName);
+
+  sendJson(res, 201, { ok: true, orgId: finalOrgId });
+}
+
+/** PATCH /__auth/admin/orgs/:orgId/credentials — super admin updates tenant admin email/password. */
+async function handleAdminUpdateCredentials(
+  req: IncomingMessage,
+  res: ServerResponse,
+  orgId: string,
+): Promise<void> {
+  if (req.method !== "PATCH") {
+    sendJson(res, 405, { error: "method_not_allowed" });
+    return;
+  }
+  const caller = requireSuperAdmin(req, res);
+  if (!caller) {
+    return;
+  }
+
+  const body = await readJsonBody(req, MAX_AUTH_BODY_BYTES);
+  if (!body.ok) {
+    sendJson(res, 400, { error: "invalid_body" });
+    return;
+  }
+
+  const payload = body.value as Record<string, unknown>;
+  const email = typeof payload["email"] === "string" ? validateEmail(payload["email"]) : null;
+  const password =
+    typeof payload["password"] === "string" ? validateString(payload["password"], 1024) : null;
+  const displayName =
+    typeof payload["displayName"] === "string" ? validateString(payload["displayName"], 100) : null;
+
+  if (!email && !password && !displayName) {
+    sendJson(res, 400, { error: "no_fields_to_update" });
+    return;
+  }
+
+  if (password !== null && password.length < 8) {
+    sendJson(res, 400, { error: "password_too_short" });
+    return;
+  }
+
+  const result = await updateUserCredentials(orgId, {
+    ...(email ? { email } : {}),
+    ...(password ? { password } : {}),
+    ...(displayName ? { displayName } : {}),
+  });
+
+  if (!result.ok) {
+    const code = result.error;
+    if (code === "user_not_found") {
+      sendJson(res, 404, { error: "user_not_found" });
+    } else if (code === "email_exists") {
+      sendJson(res, 409, { error: "email_exists" });
+    } else {
+      sendJson(res, 500, { error: "update_failed" });
+    }
+    return;
+  }
+
+  sendJson(res, 200, { ok: true });
+}
+
 function handleRegenerateApiKey(req: IncomingMessage, res: ServerResponse): void {
   if (req.method !== "POST") {
     sendJson(res, 405, { error: "method_not_allowed" });
@@ -449,8 +606,22 @@ function handleRegenerateApiKey(req: IncomingMessage, res: ServerResponse): void
   if (!caller) {
     return;
   }
-  const apiKey = regenerateTenantApiKey(caller.orgId);
-  sendJson(res, 200, { apiKey });
+  const rawApiKey = regenerateTenantApiKey(caller.orgId);
+  sendJson(res, 200, { apiKey: maskApiKey(rawApiKey) });
+}
+
+/** GET /__auth/api-key/status — returns only masked key status, never the raw key. */
+function handleApiKeyStatus(req: IncomingMessage, res: ServerResponse): void {
+  if (req.method !== "GET") {
+    sendJson(res, 405, { error: "method_not_allowed" });
+    return;
+  }
+  const caller = requireAuth(req, res);
+  if (!caller) {
+    return;
+  }
+  const rawApiKey = getOrCreateTenantApiKey(caller.orgId);
+  sendJson(res, 200, maskApiKey(rawApiKey));
 }
 
 // ---------------------------------------------------------------------------
@@ -517,8 +688,26 @@ export async function handleAuthHttpRequest(
     return true;
   }
 
+  if (subPath === "admin/orgs") {
+    await handleAdminCreateOrg(req, res);
+    return true;
+  }
+
+  // PATCH /__auth/admin/orgs/:orgId/credentials
+  const credentialsMatch = subPath.match(/^admin\/orgs\/([^/]+)\/credentials$/);
+  if (credentialsMatch) {
+    const targetOrgId = decodeURIComponent(credentialsMatch[1] ?? "");
+    await handleAdminUpdateCredentials(req, res, targetOrgId);
+    return true;
+  }
+
   if (subPath === "api-keys/regenerate") {
     handleRegenerateApiKey(req, res);
+    return true;
+  }
+
+  if (subPath === "api-key/status") {
+    handleApiKeyStatus(req, res);
     return true;
   }
 

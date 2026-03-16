@@ -58,6 +58,8 @@ export const ConnectParamsSchema = Type.Object(
           token: Type.Optional(Type.String()),
           deviceToken: Type.Optional(Type.String()),
           password: Type.Optional(Type.String()),
+          /** HTTP session token for resolving tenant orgId on web UI connections. */
+          sessionToken: Type.Optional(Type.String()),
         },
         { additionalProperties: false },
       ),

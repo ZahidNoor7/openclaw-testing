@@ -26,6 +26,7 @@ import {
   pruneAgentConfig,
 } from "../../commands/agents.config.js";
 import { loadConfig, writeConfigFile } from "../../config/config.js";
+import { getAgentsForOrganization } from "../../config/organizations.js";
 import { resolveSessionTranscriptsDirForAgent } from "../../config/sessions/paths.js";
 import { sameFileIdentity } from "../../infra/file-identity.js";
 import { SafeOpenError, readLocalFileSafely, writeFileWithinRoot } from "../../infra/fs-safe.js";
@@ -456,7 +457,7 @@ function respondWorkspaceFileMissing(params: {
 }
 
 export const agentsHandlers: GatewayRequestHandlers = {
-  "agents.list": ({ params, respond }) => {
+  "agents.list": ({ params, respond, client }) => {
     if (!validateAgentsListParams(params)) {
       respond(
         false,
@@ -471,6 +472,15 @@ export const agentsHandlers: GatewayRequestHandlers = {
 
     const cfg = loadConfig();
     const result = listAgentsForGateway(cfg);
+
+    // Filter agents by orgId when client is authenticated via tenant API key.
+    // When client.orgId is undefined (single-user mode), all agents are returned unchanged.
+    if (client?.orgId) {
+      const allowedAgents = getAgentsForOrganization(cfg, client.orgId);
+      const allowedIds = new Set(allowedAgents.map((a) => normalizeAgentId(a.id)));
+      result.agents = result.agents.filter((a) => allowedIds.has(normalizeAgentId(a.id)));
+    }
+
     respond(true, result, undefined);
   },
   "agents.create": async ({ params, respond }) => {

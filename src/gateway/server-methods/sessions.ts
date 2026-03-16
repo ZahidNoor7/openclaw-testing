@@ -342,7 +342,7 @@ async function cleanupSessionBeforeMutation(params: {
 }
 
 export const sessionsHandlers: GatewayRequestHandlers = {
-  "sessions.list": ({ params, respond }) => {
+  "sessions.list": ({ params, respond, client }) => {
     if (!assertValidParams(params, validateSessionsListParams, "sessions.list", respond)) {
       return;
     }
@@ -355,6 +355,32 @@ export const sessionsHandlers: GatewayRequestHandlers = {
       store,
       opts: p,
     });
+
+    // Filter sessions by orgId when client is authenticated via tenant API key.
+    // When client.orgId is undefined (single-user mode), all sessions are returned unchanged.
+    if (client?.orgId) {
+      // Build a map of agentId -> organizationId from the config for fast lookup.
+      const agentOrgMap = new Map<string, string | undefined>();
+      for (const agent of cfg.agents?.list ?? []) {
+        if (agent?.id) {
+          agentOrgMap.set(normalizeAgentId(agent.id), agent.organizationId);
+        }
+      }
+      const clientOrgId = client.orgId;
+      result.sessions = result.sessions.filter((s) => {
+        const parsed = parseAgentSessionKey(s.key);
+        if (!parsed) {
+          // Non-agent-scoped keys (global, unknown) — include them
+          return true;
+        }
+        const agentId = normalizeAgentId(parsed.agentId);
+        const agentOrgId = agentOrgMap.get(agentId);
+        // Include if agent is global (no organizationId) or belongs to client's org
+        return !agentOrgId || agentOrgId === clientOrgId;
+      });
+      result.count = result.sessions.length;
+    }
+
     respond(true, result, undefined);
   },
   "sessions.preview": ({ params, respond }) => {

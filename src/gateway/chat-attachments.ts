@@ -1,3 +1,4 @@
+import JSZip from "jszip";
 import { estimateBase64DecodedBytes } from "../media/base64.js";
 import { extractPdfContent } from "../media/pdf-extract.js";
 import { sniffMimeFromBase64 } from "../media/sniff-mime-from-base64.js";
@@ -110,6 +111,183 @@ function stripDataUrlPrefix(content: string): string {
   return m ? m[1] : content.trim();
 }
 
+// ─── Office document extraction helpers ──────────────────────────────────────
+
+function decodeXmlEntities(str: string): string {
+  return str
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"');
+}
+
+/** Convert a column letter (e.g. "A", "Z", "AA") to a zero-based index. */
+function colLetterToIndex(col: string): number {
+  if (!col) {
+    return -1;
+  }
+  let idx = 0;
+  for (const ch of col.toUpperCase()) {
+    idx = idx * 26 + (ch.charCodeAt(0) - 64);
+  }
+  return idx - 1;
+}
+
+/** Extract plain text from a DOCX buffer using jszip. */
+async function extractDocxText(buf: Buffer): Promise<string> {
+  const zip = await JSZip.loadAsync(buf);
+  const docFile = zip.file("word/document.xml");
+  if (!docFile) {
+    return "";
+  }
+  const xml = await docFile.async("text");
+  return xml
+    .replace(/<\/w:p>/g, "\n")
+    .replace(/<w:br\/>/g, "\n")
+    .replace(/<w:tab\/>/g, "\t")
+    .replace(/<[^>]+>/g, "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&")
+    .replace(/&apos;/g, "'")
+    .replace(/&quot;/g, '"')
+    .replace(/\r\n|\r/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+/** Extract plain text from an XLSX buffer as tab-separated rows. */
+async function extractXlsxText(buf: Buffer): Promise<string> {
+  const zip = await JSZip.loadAsync(buf);
+
+  // Parse shared strings table
+  const sharedStrings: string[] = [];
+  const ssFile = zip.file("xl/sharedStrings.xml");
+  if (ssFile) {
+    const ssXml = await ssFile.async("text");
+    const siRe = /<si>([\s\S]*?)<\/si>/g;
+    let siM: RegExpExecArray | null;
+    while ((siM = siRe.exec(ssXml)) !== null) {
+      const tRe = /<t(?:\s[^>]*)?>([^<]*)<\/t>/g;
+      let tM: RegExpExecArray | null;
+      let s = "";
+      while ((tM = tRe.exec(siM[1])) !== null) {
+        s += tM[1];
+      }
+      sharedStrings.push(decodeXmlEntities(s));
+    }
+  }
+
+  // Find worksheets sorted numerically
+  const sheetPaths = Object.keys(zip.files)
+    .filter((n) => /^xl\/worksheets\/sheet\d+\.xml$/.test(n))
+    .toSorted((a, b) => {
+      const na = parseInt(/(\d+)/.exec(a)?.[1] ?? "0", 10);
+      const nb = parseInt(/(\d+)/.exec(b)?.[1] ?? "0", 10);
+      return na - nb;
+    });
+
+  const lines: string[] = [];
+  for (const sheetPath of sheetPaths) {
+    const sf = zip.file(sheetPath);
+    if (!sf) {
+      continue;
+    }
+    const sheetXml = await sf.async("text");
+    const rowRe = /<row\b[^>]*>([\s\S]*?)<\/row>/g;
+    let rowM: RegExpExecArray | null;
+    while ((rowM = rowRe.exec(sheetXml)) !== null) {
+      const cells: Array<{ col: number; value: string }> = [];
+      const cellRe = /<c\b([^>]*)>([\s\S]*?)<\/c>/g;
+      let cellM: RegExpExecArray | null;
+      while ((cellM = cellRe.exec(rowM[1])) !== null) {
+        const attrs = cellM[1];
+        const body = cellM[2];
+        const colStr = /\br="([A-Z]+)\d+"/.exec(attrs)?.[1] ?? "";
+        const cellType = /\bt="([^"]*)"/.exec(attrs)?.[1] ?? "";
+        const col = colLetterToIndex(colStr);
+        if (col < 0) {
+          continue;
+        }
+        // Inline string (<is><t>...</t></is>) takes priority over <v>
+        const isText = /<t(?:\s[^>]*)?>([^<]*)<\/t>/.exec(
+          /<is>([\s\S]*?)<\/is>/.exec(body)?.[1] ?? "",
+        )?.[1];
+        const vVal = /<v>([^<]*)<\/v>/.exec(body)?.[1] ?? "";
+        let value = "";
+        if (isText !== undefined) {
+          value = decodeXmlEntities(isText);
+        } else if (cellType === "s") {
+          value = sharedStrings[parseInt(vVal, 10)] ?? "";
+        } else {
+          value = vVal;
+        }
+        cells.push({ col, value });
+      }
+      if (cells.some((c) => c.value.trim())) {
+        const maxCol = Math.max(...cells.map((c) => c.col));
+        const rowArr = Array.from({ length: maxCol + 1 }, () => "");
+        for (const cell of cells) {
+          rowArr[cell.col] = cell.value;
+        }
+        lines.push(rowArr.join("\t"));
+      }
+    }
+  }
+  return lines.join("\n");
+}
+
+/** Extract plain text from a PPTX buffer (slide text only). */
+async function extractPptxText(buf: Buffer): Promise<string> {
+  const zip = await JSZip.loadAsync(buf);
+  const slidePaths = Object.keys(zip.files)
+    .filter((n) => /^ppt\/slides\/slide\d+\.xml$/.test(n))
+    .toSorted((a, b) => {
+      const na = parseInt(/(\d+)/.exec(a)?.[1] ?? "0", 10);
+      const nb = parseInt(/(\d+)/.exec(b)?.[1] ?? "0", 10);
+      return na - nb;
+    });
+
+  const slideTexts: string[] = [];
+  for (const slidePath of slidePaths) {
+    const sf = zip.file(slidePath);
+    if (!sf) {
+      continue;
+    }
+    const xml = await sf.async("text");
+    const tRe = /<a:t>([^<]*)<\/a:t>/g;
+    let tM: RegExpExecArray | null;
+    const parts: string[] = [];
+    while ((tM = tRe.exec(xml)) !== null) {
+      const t = decodeXmlEntities(tM[1]).trim();
+      if (t) {
+        parts.push(t);
+      }
+    }
+    if (parts.length > 0) {
+      slideTexts.push(parts.join(" "));
+    }
+  }
+  return slideTexts.join("\n\n");
+}
+
+function isModernOfficeOpenXmlMime(mime?: string): boolean {
+  return (
+    mime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document" ||
+    mime === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+    mime === "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+  );
+}
+
+function isLegacyOfficeMime(mime?: string): boolean {
+  return (
+    mime === "application/msword" ||
+    mime === "application/vnd.ms-excel" ||
+    mime === "application/vnd.ms-powerpoint"
+  );
+}
+
 /**
  * Parse attachments and extract images as structured content blocks, and inject
  * document/text file content into the message text.
@@ -120,7 +298,9 @@ function stripDataUrlPrefix(content: string): string {
  * - application/pdf: text extracted via pdfjs-dist; injected as <document> block.
  * - text/* / application/json / application/xml / application/javascript:
  *   decoded as UTF-8; injected as <document> block.
- * - Other binary types (docx, xlsx, etc.): logged and skipped.
+ * - .docx / .xlsx / .pptx (Open XML): text extracted via jszip; injected as <document> block.
+ * - .doc / .xls / .ppt (legacy binary): fallback hint injected as <document> block.
+ * - Other binary types: logged and skipped.
  */
 export async function parseMessageWithAttachments(
   message: string,
@@ -215,6 +395,69 @@ export async function parseMessageWithAttachments(
       continue;
     }
 
+    // ── Modern Office Open XML (.docx, .xlsx, .pptx) ─────────────────────────
+    if (isModernOfficeOpenXmlMime(declaredMime)) {
+      if (typeof att.content !== "string") {
+        log?.warn(`attachment ${label}: content must be base64 string, skipping`);
+        continue;
+      }
+      const raw = stripDataUrlPrefix(att.content);
+      if (!raw) {
+        log?.warn(`attachment ${label}: empty content, skipping`);
+        continue;
+      }
+      try {
+        const buf = Buffer.from(raw, "base64");
+        if (buf.byteLength > maxBytes) {
+          log?.warn(
+            `attachment ${label}: exceeds size limit (${buf.byteLength} > ${maxBytes} bytes), skipping`,
+          );
+          continue;
+        }
+        let text = "";
+        if (
+          declaredMime === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ) {
+          text = await extractDocxText(buf);
+        } else if (
+          declaredMime === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        ) {
+          text = await extractXlsxText(buf);
+        } else if (
+          declaredMime ===
+          "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        ) {
+          text = await extractPptxText(buf);
+        }
+        if (text.trim()) {
+          docBlocks.push(`<document filename="${label}">\n${text.trim()}\n</document>`);
+        } else {
+          log?.warn(`attachment ${label}: no extractable text found`);
+          docBlocks.push(
+            `<document filename="${label}">\n[No extractable text found]\n</document>`,
+          );
+        }
+      } catch (err) {
+        log?.warn(`attachment ${label}: Office document extraction failed: ${String(err)}`);
+      }
+      continue;
+    }
+
+    // ── Legacy binary Office formats (.doc, .xls, .ppt) ──────────────────────
+    if (isLegacyOfficeMime(declaredMime)) {
+      // OLE2 binary format — cannot extract text without a dedicated parser.
+      const suggestion =
+        declaredMime === "application/msword"
+          ? ".docx"
+          : declaredMime === "application/vnd.ms-excel"
+            ? ".csv or .xlsx"
+            : ".pptx";
+      docBlocks.push(
+        `<document filename="${label}">\n[Legacy Office file attached — re-save as ${suggestion} to enable text extraction]\n</document>`,
+      );
+      continue;
+    }
+
     // ── Images + untyped (sniff-based) — preserves original throw-on-error behaviour ──
     if (isImageMime(declaredMime) || !declaredMime) {
       const normalized = normalizeAttachment(att, idx, {
@@ -248,7 +491,7 @@ export async function parseMessageWithAttachments(
       continue;
     }
 
-    // ── Unsupported binary types (docx, xlsx, pptx, etc.) ────────────────────
+    // ── Remaining unsupported binary types ───────────────────────────────────
     log?.warn(`attachment ${label}: unsupported type "${declaredMime}", skipping`);
   }
 

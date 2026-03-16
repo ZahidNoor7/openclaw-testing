@@ -169,24 +169,35 @@ let fileInputRef: HTMLInputElement | null = null;
 
 function handleFileSelect(e: Event, props: ChatProps) {
   const input = e.target as HTMLInputElement;
-  const files = input.files;
-  // Reset so the same file can be re-selected later
+  // Snapshot into a plain array BEFORE resetting input.value —
+  // browsers empty the live FileList when the input value is cleared.
+  const fileArray = input.files ? Array.from(input.files) : [];
   input.value = "";
-  if (!files || !props.onAttachmentsChange) {
+
+  if (fileArray.length === 0 || !props.onAttachmentsChange) {
     return;
   }
-  for (const file of Array.from(files)) {
+
+  // Process files sequentially so each FileReader callback sees the latest
+  // attachments array without clobbering concurrent reads.
+  const startingAttachments = [...(props.attachments ?? [])];
+  let pending = fileArray.length;
+  const collected: ChatAttachment[] = [];
+
+  for (const file of fileArray) {
     const reader = new FileReader();
     reader.addEventListener("load", () => {
       const dataUrl = reader.result as string;
-      const newAttachment: ChatAttachment = {
+      collected.push({
         id: generateAttachmentId(),
         dataUrl,
         mimeType: file.type || "application/octet-stream",
         fileName: file.name,
-      };
-      const current = props.attachments ?? [];
-      props.onAttachmentsChange?.([...current, newAttachment]);
+      });
+      pending--;
+      if (pending === 0) {
+        props.onAttachmentsChange?.([...startingAttachments, ...collected]);
+      }
     });
     reader.readAsDataURL(file);
   }
@@ -212,6 +223,9 @@ function handlePaste(e: ClipboardEvent, props: ChatProps) {
 
   e.preventDefault();
 
+  // Same async FileReader clobber prevention as handleFileSelect.
+  let next = [...(props.attachments ?? [])];
+
   for (const item of imageItems) {
     const file = item.getAsFile();
     if (!file) {
@@ -226,21 +240,74 @@ function handlePaste(e: ClipboardEvent, props: ChatProps) {
         dataUrl,
         mimeType: file.type,
       };
-      const current = props.attachments ?? [];
-      props.onAttachmentsChange?.([...current, newAttachment]);
+      next = [...next, newAttachment];
+      props.onAttachmentsChange?.(next);
     });
     reader.readAsDataURL(file);
   }
 }
 
-function renderAttachmentPreview(props: ChatProps) {
+function attachmentTypeInfo(
+  fileName: string | undefined,
+  mimeType: string,
+): { label: string; cssClass: string } {
+  const ext = (fileName ?? "").split(".").pop()?.toLowerCase() ?? "";
+  const m = mimeType.toLowerCase();
+  if (m === "application/pdf" || ext === "pdf") {
+    return { label: "PDF", cssClass: "doc-type--pdf" };
+  }
+  if (
+    m.includes("wordprocessingml") ||
+    m === "application/msword" ||
+    ext === "docx" ||
+    ext === "doc"
+  ) {
+    return { label: "Word", cssClass: "doc-type--word" };
+  }
+  if (
+    m.includes("spreadsheetml") ||
+    m.includes("ms-excel") ||
+    ext === "xlsx" ||
+    ext === "xls" ||
+    ext === "csv" ||
+    m === "text/csv"
+  ) {
+    return {
+      label: ext === "xls" ? "XLS" : ext === "csv" ? "CSV" : "Excel",
+      cssClass: "doc-type--excel",
+    };
+  }
+  if (m.includes("presentationml") || ext === "pptx" || ext === "ppt") {
+    return { label: "Slides", cssClass: "doc-type--pptx" };
+  }
+  if (m === "application/json" || ext === "json" || ext === "ts" || ext === "js") {
+    return { label: ext.toUpperCase() || "Code", cssClass: "doc-type--code" };
+  }
+  if (ext === "md" || ext === "markdown") {
+    return { label: "MD", cssClass: "doc-type--code" };
+  }
+  if (m.startsWith("text/") || ext === "txt") {
+    return { label: "TXT", cssClass: "doc-type--text" };
+  }
+  return { label: ext.toUpperCase() || "FILE", cssClass: "doc-type--default" };
+}
+
+function renderAttachmentPreview(
+  props: ChatProps,
+  opts?: {
+    variant?: "inline" | "floating";
+  },
+) {
   const attachments = props.attachments ?? [];
   if (attachments.length === 0) {
     return nothing;
   }
 
+  const variant = opts?.variant ?? "floating";
+  const containerClass = `chat-attachments${variant === "inline" ? " chat-attachments--inline" : ""}`;
+
   return html`
-    <div class="chat-attachments">
+    <div class=${containerClass}>
       ${attachments.map(
         (att) => html`
           <div class="chat-attachment">
@@ -251,12 +318,14 @@ function renderAttachmentPreview(props: ChatProps) {
                   alt="Attachment preview"
                   class="chat-attachment__img"
                 />`
-                : html`<div class="chat-attachment__file">
-                  ${icons.fileText}
-                  <span class="chat-attachment__filename"
-                    >${att.fileName ?? att.mimeType}</span
-                  >
-                </div>`
+                : (() => {
+                    const { label, cssClass } = attachmentTypeInfo(att.fileName, att.mimeType);
+                    return html`<div class="chat-attachment__file ${cssClass}">
+                      ${icons.fileText}
+                      <span class="chat-attachment__file-ext">${label}</span>
+                      <span class="chat-attachment__filename">${att.fileName ?? att.mimeType}</span>
+                    </div>`;
+                  })()
             }
             <button
               class="chat-attachment__remove"
@@ -529,7 +598,6 @@ export function renderChat(props: ChatProps) {
       }
 
       <div class="chat-compose">
-        ${renderAttachmentPreview(props)}
         <input
           ${ref((el) => {
             fileInputRef = (el as HTMLInputElement | null) ?? null;
@@ -543,7 +611,9 @@ export function renderChat(props: ChatProps) {
         <div class="chat-compose__row">
           <label class="field chat-compose__field">
             <span>Message</span>
-            <textarea
+            <div class="chat-compose__input">
+              ${renderAttachmentPreview(props, { variant: "inline" })}
+              <textarea
               ${ref((el) => el && adjustTextareaHeight(el as HTMLTextAreaElement))}
               .value=${props.draft}
               dir=${detectTextDirection(props.draft)}
@@ -574,6 +644,7 @@ export function renderChat(props: ChatProps) {
               @paste=${(e: ClipboardEvent) => handlePaste(e, props)}
               placeholder=${composePlaceholder}
             ></textarea>
+            </div>
           </label>
           <div class="chat-compose__actions">
             <button

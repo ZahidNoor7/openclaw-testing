@@ -1685,6 +1685,10 @@ export function renderApp(state: AppViewState) {
                       state.orgCreateName = "";
                       state.orgCreateId = "";
                       state.orgCreateDescription = "";
+                      state.orgCreateAdminName = "";
+                      state.orgCreateEmail = "";
+                      state.orgCreatePassword = "";
+                      state.orgCreatePasswordShow = false;
                       state.orgCreateApiKeys = [];
                       state.orgCreateApiKeyProvider = "openai";
                       state.orgCreateApiKeyLabel = "";
@@ -1710,6 +1714,10 @@ export function renderApp(state: AppViewState) {
                   createName: state.orgCreateName,
                   createId: state.orgCreateId,
                   createDescription: state.orgCreateDescription,
+                  createAdminName: state.orgCreateAdminName,
+                  createEmail: state.orgCreateEmail,
+                  createPassword: state.orgCreatePassword,
+                  createPasswordShow: state.orgCreatePasswordShow,
                   createApiKeys: state.orgCreateApiKeys,
                   createApiKeyProvider: state.orgCreateApiKeyProvider,
                   createApiKeyLabel: state.orgCreateApiKeyLabel,
@@ -1719,6 +1727,9 @@ export function renderApp(state: AppViewState) {
                   editingId: state.orgEditingId,
                   editName: state.orgEditName,
                   editDescription: state.orgEditDescription,
+                  editAdminEmail: state.orgEditAdminEmail,
+                  editAdminPassword: state.orgEditAdminPassword,
+                  editAdminPasswordShow: state.orgEditAdminPasswordShow,
                   editApiKeyProvider: state.orgEditApiKeyProvider,
                   editApiKeyLabel: state.orgEditApiKeyLabel,
                   editApiKeyValue: state.orgEditApiKeyValue,
@@ -1734,35 +1745,86 @@ export function renderApp(state: AppViewState) {
                   onCreateNameChange: (val) => (state.orgCreateName = val),
                   onCreateIdChange: (val) => (state.orgCreateId = val),
                   onCreateDescriptionChange: (val) => (state.orgCreateDescription = val),
+                  onCreateAdminNameChange: (val) => (state.orgCreateAdminName = val),
+                  onCreateEmailChange: (val) => (state.orgCreateEmail = val),
+                  onCreatePasswordChange: (val) => (state.orgCreatePassword = val),
+                  onCreatePasswordToggleShow: () => {
+                    state.orgCreatePasswordShow = !state.orgCreatePasswordShow;
+                  },
                   onCreate: async () => {
                     const name = state.orgCreateName.trim();
-                    const id = state.orgCreateId.trim() || slugifyOrgName(name);
-                    if (!name) {
+                    const adminName = state.orgCreateAdminName.trim();
+                    const email = state.orgCreateEmail.trim().toLowerCase();
+                    const password = state.orgCreatePassword;
+                    const orgId = state.orgCreateId.trim() || slugifyOrgName(name);
+                    if (!name || !adminName || !email || password.length < 8) {
                       return;
                     }
-                    if (orgs.some((o) => o.id === id)) {
-                      state.orgLastError = `Organization "${id}" already exists.`;
-                      return;
+                    state.orgSaving = true;
+                    state.orgLastError = null;
+                    try {
+                      const base = (state.settings.gatewayUrl ?? "")
+                        .replace(/^wss?:/, (p: string) => (p === "wss:" ? "https:" : "http:"))
+                        .replace(/\/+$/, "");
+                      const res = await fetch(`${base}/__auth/admin/orgs`, {
+                        method: "POST",
+                        headers: {
+                          "Content-Type": "application/json",
+                          ...(state.appAuth?.token
+                            ? { Authorization: `Bearer ${state.appAuth.token}` }
+                            : {}),
+                        },
+                        body: JSON.stringify({
+                          orgName: name,
+                          adminName,
+                          email,
+                          password,
+                          orgId,
+                          ...(state.orgCreateDescription.trim()
+                            ? { description: state.orgCreateDescription.trim() }
+                            : {}),
+                        }),
+                      });
+                      const data = (await res.json()) as Record<string, unknown>;
+                      if (!res.ok) {
+                        const code = data["error"] as string | undefined;
+                        if (code === "email_exists") {
+                          state.orgLastError = "An account with this email already exists.";
+                        } else if (code === "password_too_short") {
+                          state.orgLastError = "Password must be at least 8 characters.";
+                        } else {
+                          state.orgLastError = "Failed to create organization.";
+                        }
+                        return;
+                      }
+                      // Reload config to reflect the new org.
+                      await loadConfig(state);
+                      // Clear form
+                      state.orgCreateName = "";
+                      state.orgCreateId = "";
+                      state.orgCreateDescription = "";
+                      state.orgCreateAdminName = "";
+                      state.orgCreateEmail = "";
+                      state.orgCreatePassword = "";
+                      state.orgCreatePasswordShow = false;
+                      state.orgCreateApiKeys = [];
+                      state.orgCreateApiKeyProvider = "openai";
+                      state.orgCreateApiKeyLabel = "";
+                      state.orgCreateApiKeyValue = "";
+                      state.orgCreateApiKeyShowValue = false;
+                    } catch (err) {
+                      state.orgLastError = String(err);
+                    } finally {
+                      state.orgSaving = false;
                     }
-                    const newOrg: OrgEntry = {
-                      id,
-                      name,
-                      ...(state.orgCreateDescription.trim()
-                        ? { description: state.orgCreateDescription.trim() }
-                        : {}),
-                      ...(state.orgCreateApiKeys.length > 0
-                        ? { providerKeys: state.orgCreateApiKeys }
-                        : {}),
-                      createdAt: new Date().toISOString(),
-                    };
-                    await orgSaveWith({
-                      organizations: { ...orgBlock, list: [...orgs, newOrg] },
-                    });
                   },
                   onEditStart: (org) => {
                     state.orgEditingId = org.id;
                     state.orgEditName = org.name;
                     state.orgEditDescription = org.description ?? "";
+                    state.orgEditAdminEmail = "";
+                    state.orgEditAdminPassword = "";
+                    state.orgEditAdminPasswordShow = false;
                     state.orgEditApiKeyProvider = "openai";
                     state.orgEditApiKeyLabel = "";
                     state.orgEditApiKeyValue = "";
@@ -1772,6 +1834,9 @@ export function renderApp(state: AppViewState) {
                     state.orgEditingId = null;
                     state.orgEditName = "";
                     state.orgEditDescription = "";
+                    state.orgEditAdminEmail = "";
+                    state.orgEditAdminPassword = "";
+                    state.orgEditAdminPasswordShow = false;
                     state.orgEditApiKeyProvider = "openai";
                     state.orgEditApiKeyLabel = "";
                     state.orgEditApiKeyValue = "";
@@ -1779,6 +1844,11 @@ export function renderApp(state: AppViewState) {
                   },
                   onEditNameChange: (val) => (state.orgEditName = val),
                   onEditDescriptionChange: (val) => (state.orgEditDescription = val),
+                  onEditAdminEmailChange: (val) => (state.orgEditAdminEmail = val),
+                  onEditAdminPasswordChange: (val) => (state.orgEditAdminPassword = val),
+                  onEditAdminPasswordToggleShow: () => {
+                    state.orgEditAdminPasswordShow = !state.orgEditAdminPasswordShow;
+                  },
                   onUpdate: async () => {
                     const editId = state.orgEditingId;
                     if (!editId) {
@@ -1788,6 +1858,7 @@ export function renderApp(state: AppViewState) {
                     if (!existingOrg) {
                       return;
                     }
+                    // Save org config (name, description) via WS.
                     const updatedOrg: OrgEntry = {
                       ...existingOrg,
                       name: state.orgEditName.trim() || existingOrg.name,
@@ -1795,9 +1866,61 @@ export function renderApp(state: AppViewState) {
                     };
                     const nextList = orgs.map((o) => (o.id === editId ? updatedOrg : o));
                     await orgSaveWith({ organizations: { ...orgBlock, list: nextList } }, false);
+
+                    // Save credentials via HTTP if any credential fields are set.
+                    const credEmail = state.orgEditAdminEmail.trim().toLowerCase();
+                    const credPassword = state.orgEditAdminPassword;
+                    if (credEmail || credPassword) {
+                      if (credPassword && credPassword.length < 8) {
+                        state.orgLastError = "Password must be at least 8 characters.";
+                        return;
+                      }
+                      try {
+                        const base = (state.settings.gatewayUrl ?? "")
+                          .replace(/^wss?:/, (p: string) => (p === "wss:" ? "https:" : "http:"))
+                          .replace(/\/+$/, "");
+                        const res = await fetch(
+                          `${base}/__auth/admin/orgs/${encodeURIComponent(editId)}/credentials`,
+                          {
+                            method: "PATCH",
+                            headers: {
+                              "Content-Type": "application/json",
+                              ...(state.appAuth?.token
+                                ? { Authorization: `Bearer ${state.appAuth.token}` }
+                                : {}),
+                            },
+                            body: JSON.stringify({
+                              ...(credEmail ? { email: credEmail } : {}),
+                              ...(credPassword ? { password: credPassword } : {}),
+                            }),
+                          },
+                        );
+                        if (!res.ok) {
+                          const data = (await res.json()) as Record<string, unknown>;
+                          const code = data["error"] as string | undefined;
+                          if (code === "email_exists") {
+                            state.orgLastError = "An account with this email already exists.";
+                          } else if (code === "password_too_short") {
+                            state.orgLastError = "Password must be at least 8 characters.";
+                          } else if (code === "user_not_found") {
+                            state.orgLastError = "No admin user found for this organization.";
+                          } else {
+                            state.orgLastError = "Failed to update credentials.";
+                          }
+                          return;
+                        }
+                      } catch (err) {
+                        state.orgLastError = String(err);
+                        return;
+                      }
+                    }
+
                     state.orgEditingId = null;
                     state.orgEditName = "";
                     state.orgEditDescription = "";
+                    state.orgEditAdminEmail = "";
+                    state.orgEditAdminPassword = "";
+                    state.orgEditAdminPasswordShow = false;
                     state.orgEditApiKeyProvider = "openai";
                     state.orgEditApiKeyLabel = "";
                     state.orgEditApiKeyValue = "";

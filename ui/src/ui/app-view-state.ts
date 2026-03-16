@@ -186,6 +186,10 @@ export type AppViewState = {
   orgCreateName: string;
   orgCreateId: string;
   orgCreateDescription: string;
+  orgCreateAdminName: string;
+  orgCreateEmail: string;
+  orgCreatePassword: string;
+  orgCreatePasswordShow: boolean;
   orgSaving: boolean;
   orgLastError: string | null;
   orgSwitching: boolean;
@@ -197,6 +201,9 @@ export type AppViewState = {
   orgEditingId: string | null;
   orgEditName: string;
   orgEditDescription: string;
+  orgEditAdminEmail: string;
+  orgEditAdminPassword: string;
+  orgEditAdminPasswordShow: boolean;
   /** Multi-key management: keys queued while creating a new org */
   orgCreateApiKeys: import("../../../src/config/types.openclaw.js").OrgApiKey[];
   orgCreateApiKeyProvider: string;

@@ -2,6 +2,7 @@ import type { IncomingMessage } from "node:http";
 import os from "node:os";
 import type { WebSocket } from "ws";
 import { loadConfig } from "../../../config/config.js";
+import { validateTenantApiKey, findSession } from "../../../infra/auth-db.js";
 import {
   deriveDeviceIdFromPublicKey,
   normalizeDevicePublicKeyBase64Url,
@@ -1081,6 +1082,24 @@ export function attachGatewayWsMessageHandler(params: {
         };
 
         clearHandshakeTimer();
+        // Resolve orgId from tenant API key auth OR HTTP session token.
+        // Priority 1: auth.token is a tenant API key (direct API access).
+        // Priority 2: auth.sessionToken carries the HTTP session token (web UI).
+        // token/password auth modes without a session leave orgId undefined (Requirement 3.6).
+        const tenantToken = connectParams.auth?.token?.trim();
+        let resolvedOrgId = tenantToken ? validateTenantApiKey(tenantToken)?.orgId : undefined;
+        if (!resolvedOrgId) {
+          // Try to resolve orgId from the HTTP session token passed by the web UI.
+          // Browser WebSocket API doesn't support custom headers, so the session token
+          // is passed in auth.sessionToken instead of the Authorization header.
+          const sessionToken = connectParams.auth?.sessionToken?.trim();
+          if (sessionToken) {
+            const session = findSession(sessionToken);
+            if (session?.role === "tenant_admin" && session.orgId) {
+              resolvedOrgId = session.orgId;
+            }
+          }
+        }
         const nextClient: GatewayWsClient = {
           socket,
           connect: connectParams,
@@ -1090,6 +1109,7 @@ export function attachGatewayWsMessageHandler(params: {
           canvasHostUrl,
           canvasCapability,
           canvasCapabilityExpiresAtMs,
+          orgId: resolvedOrgId,
         };
         setClient(nextClient);
         setHandshakeState("connected");

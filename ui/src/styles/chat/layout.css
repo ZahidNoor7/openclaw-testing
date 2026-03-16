@@ -194,6 +194,7 @@
   padding: 8px;
   overflow: hidden;
   box-sizing: border-box;
+  color: var(--doc-badge-bg, var(--text));
 }
 
 .chat-attachment__file svg {
@@ -203,6 +204,15 @@
   stroke: currentColor;
   fill: none;
   stroke-width: 1.5;
+}
+
+.chat-attachment__file-ext {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--doc-badge-bg, var(--text));
+  line-height: 1;
 }
 
 .chat-attachment__filename {
@@ -268,44 +278,125 @@
   background: rgba(0, 0, 0, 0.6);
 }
 
-/* Document chips displayed in chat messages */
+/* Document cards displayed in chat messages */
 .chat-message-docs {
   display: flex;
   flex-wrap: wrap;
-  gap: 6px;
+  gap: 8px;
   margin-bottom: 8px;
 }
 
-.chat-message-doc-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
+.chat-message-doc-card {
+  display: flex;
+  align-items: stretch;
   border: 1px solid var(--border);
   border-radius: var(--radius-md);
-  background: var(--bg);
-  font-size: 12px;
-  color: var(--text);
-  max-width: 240px;
-  min-width: 0;
+  background: var(--bg-secondary, var(--bg));
+  overflow: hidden;
+  max-width: 260px;
+  min-width: 160px;
+  transition: box-shadow 120ms ease;
 }
 
-.chat-message-doc-chip svg {
-  width: 13px;
-  height: 13px;
+.chat-message-doc-card.clickable {
+  cursor: pointer;
+}
+
+.chat-message-doc-card.clickable:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.12);
+}
+
+.chat-message-doc-card.clickable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Left colored badge */
+.chat-message-doc-type-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 3px;
+  padding: 8px 10px;
+  min-width: 46px;
+  background: var(--doc-badge-bg, #6b7280);
+  color: #fff;
   flex-shrink: 0;
+}
+
+.chat-message-doc-type-badge svg {
+  width: 14px;
+  height: 14px;
   stroke: currentColor;
   fill: none;
   stroke-width: 1.5;
+  flex-shrink: 0;
+}
+
+.chat-message-doc-ext {
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  line-height: 1;
+}
+
+/* Right body section */
+.chat-message-doc-body {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 10px;
+  min-width: 0;
+  flex: 1;
 }
 
 .chat-message-doc-name {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* User message document chips align right */
+.chat-message-doc-preview {
+  font-size: 11px;
+  color: var(--text-muted, var(--text-secondary, #888));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Chevron view button */
+.chat-message-doc-view-btn {
+  display: flex;
+  align-items: center;
+  padding: 0 6px;
+  color: var(--text-muted, #888);
+  flex-shrink: 0;
+}
+
+.chat-message-doc-view-btn svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor;
+  fill: none;
+  stroke-width: 2;
+}
+
+/* File-type badge colors */
+.doc-type--pdf    { --doc-badge-bg: #e53e3e; }
+.doc-type--word   { --doc-badge-bg: #2b6cb0; }
+.doc-type--excel  { --doc-badge-bg: #276749; }
+.doc-type--pptx   { --doc-badge-bg: #c05621; }
+.doc-type--code   { --doc-badge-bg: #553c9a; }
+.doc-type--text   { --doc-badge-bg: #4a5568; }
+.doc-type--default { --doc-badge-bg: #4a5568; }
+
+/* User message document cards align right */
 .chat-group.user .chat-message-docs {
   justify-content: flex-end;
 }
@@ -352,6 +443,7 @@
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
+  flex-direction: column;
   align-items: stretch;
 }
 
@@ -360,20 +452,58 @@
   display: none;
 }
 
+/* Compose input wrapper: lets us render attachment chips "inside" the textarea area. */
+.chat-compose__input {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 1px solid var(--input);
+  background: var(--card);
+  border-radius: 8px;
+  box-shadow: inset 0 1px 0 var(--card-highlight);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.chat-compose__input:focus-within {
+  border-color: var(--ring);
+  box-shadow: var(--focus-ring);
+}
+
+/* Inline attachment preview (visually inside the compose field) */
+.chat-attachments.chat-attachments--inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-self: stretch;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--input);
+  padding: 8px 12px;
+  width: 100%;
+}
+
 /* Override .field textarea min-height (180px) from components.css */
-.chat-compose .chat-compose__field textarea {
+.chat-compose .chat-compose__input textarea {
   width: 100%;
   height: 40px;
   min-height: 40px;
   max-height: 150px;
   padding: 9px 12px;
-  border-radius: 8px;
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  box-shadow: none;
   overflow-y: auto;
   resize: none;
   white-space: pre-wrap;
   font-family: var(--font-body);
   font-size: 14px;
   line-height: 1.45;
+}
+
+.chat-compose .chat-compose__input textarea:focus {
+  box-shadow: none;
 }
 
 .chat-compose__field textarea:disabled {

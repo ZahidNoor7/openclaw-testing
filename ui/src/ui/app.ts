@@ -281,6 +281,10 @@ export class OpenClawApp extends LitElement {
   @state() orgCreateName = "";
   @state() orgCreateId = "";
   @state() orgCreateDescription = "";
+  @state() orgCreateAdminName = "";
+  @state() orgCreateEmail = "";
+  @state() orgCreatePassword = "";
+  @state() orgCreatePasswordShow = false;
   @state() orgSaving = false;
   @state() orgLastError: string | null = null;
   @state() orgSwitching = false;
@@ -289,6 +293,9 @@ export class OpenClawApp extends LitElement {
   @state() orgEditingId: string | null = null;
   @state() orgEditName = "";
   @state() orgEditDescription = "";
+  @state() orgEditAdminEmail = "";
+  @state() orgEditAdminPassword = "";
+  @state() orgEditAdminPasswordShow = false;
   // Multi-key management
   @state() orgCreateApiKeys: OrgApiKey[] = [];
   @state() orgCreateApiKeyProvider = "openai";

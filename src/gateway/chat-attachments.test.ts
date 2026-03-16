@@ -189,7 +189,8 @@ describe("text file injection", () => {
 });
 
 describe("unsupported binary types", () => {
-  it("logs warning and skips docx/xlsx attachments", async () => {
+  it("logs warning on corrupted docx and skips content injection", async () => {
+    // Fake/corrupted docx — not a valid ZIP so extraction fails
     const fake = Buffer.from("PK\x03\x04fake-docx").toString("base64");
     const { parsed, logs } = await parseWithWarnings("q", [
       {
@@ -199,8 +200,53 @@ describe("unsupported binary types", () => {
       },
     ]);
     expect(logs).toHaveLength(1);
+    expect(logs[0]).toMatch(/office document extraction failed/i);
+    expect(parsed.message).toBe("q");
+    expect(parsed.images).toHaveLength(0);
+  });
+
+  it("logs warning and skips truly unsupported binary types", async () => {
+    const fake = Buffer.from("binary data").toString("base64");
+    const { parsed, logs } = await parseWithWarnings("q", [
+      {
+        mimeType: "application/octet-stream",
+        fileName: "file.bin",
+        content: fake,
+      },
+    ]);
+    expect(logs).toHaveLength(1);
     expect(logs[0]).toMatch(/unsupported type/i);
     expect(parsed.message).toBe("q");
+    expect(parsed.images).toHaveLength(0);
+  });
+
+  it("injects fallback message for legacy .xls attachments", async () => {
+    const fake = Buffer.from("\xd0\xcf\x11\xe0legacy-xls").toString("base64");
+    const { parsed, logs } = await parseWithWarnings("q", [
+      {
+        mimeType: "application/vnd.ms-excel",
+        fileName: "file.xls",
+        content: fake,
+      },
+    ]);
+    expect(logs).toHaveLength(0);
+    expect(parsed.message).toContain('<document filename="file.xls">');
+    expect(parsed.message).toContain("re-save as .csv or .xlsx");
+    expect(parsed.images).toHaveLength(0);
+  });
+
+  it("injects fallback message for legacy .doc attachments", async () => {
+    const fake = Buffer.from("\xd0\xcf\x11\xe0legacy-doc").toString("base64");
+    const { parsed, logs } = await parseWithWarnings("q", [
+      {
+        mimeType: "application/msword",
+        fileName: "file.doc",
+        content: fake,
+      },
+    ]);
+    expect(logs).toHaveLength(0);
+    expect(parsed.message).toContain('<document filename="file.doc">');
+    expect(parsed.message).toContain("re-save as .docx");
     expect(parsed.images).toHaveLength(0);
   });
 });

@@ -10,4 +10,6 @@ export type GatewayWsClient = {
   canvasHostUrl?: string;
   canvasCapability?: string;
   canvasCapabilityExpiresAtMs?: number;
+  /** Resolved org ID when authenticated via tenant API key. Undefined for token/password auth. */
+  orgId?: string;
 };

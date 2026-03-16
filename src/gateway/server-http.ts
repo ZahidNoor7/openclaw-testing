@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import {
   createServer as createHttpServer,
   type Server as HttpServer,
@@ -11,6 +12,7 @@ import { resolveAgentAvatar } from "../agents/identity-avatar.js";
 import { CANVAS_WS_PATH, handleA2uiHttpRequest } from "../canvas-host/a2ui.js";
 import type { CanvasHostHandler } from "../canvas-host/server.js";
 import { loadConfig } from "../config/config.js";
+import { resolveStateDir } from "../config/paths.js";
 import type { createSubsystemLogger } from "../logging/subsystem.js";
 import { safeEqualSecret } from "../security/secret-equal.js";
 import { handleSlackHttpRequest } from "../slack/http/index.js";
@@ -28,6 +30,7 @@ import {
   type ResolvedGatewayAuth,
 } from "./auth.js";
 import { normalizeCanvasScopedUrl } from "./canvas-capability.js";
+import { resolveChatImageById } from "./chat-image-store.js";
 import {
   handleControlUiAvatarRequest,
   handleControlUiHttpRequest,
@@ -564,6 +567,49 @@ export function createHooksRequestHandler(
   };
 }
 
+const CHAT_IMAGE_PREFIX = "/chat-image/";
+
+function handleChatImageRequest(
+  req: IncomingMessage,
+  res: ServerResponse,
+  requestPath: string,
+): boolean {
+  if (!requestPath.startsWith(CHAT_IMAGE_PREFIX)) {
+    return false;
+  }
+  const method = (req.method ?? "GET").toUpperCase();
+  if (method !== "GET" && method !== "HEAD") {
+    res.statusCode = 405;
+    res.setHeader("Allow", "GET, HEAD");
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.end("Method Not Allowed");
+    return true;
+  }
+  const imageId = requestPath.slice(CHAT_IMAGE_PREFIX.length);
+  const stateDir = resolveStateDir();
+  const resolved = resolveChatImageById({ imageId, stateDir });
+  if (!resolved) {
+    res.statusCode = 404;
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.end("Not Found");
+    return true;
+  }
+  try {
+    const data = fs.readFileSync(resolved.filePath);
+    res.statusCode = 200;
+    res.setHeader("Content-Type", resolved.mimeType);
+    // Content-addressed storage: safe to cache permanently
+    res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+    res.setHeader("Content-Length", String(data.length));
+    res.end(method === "HEAD" ? undefined : data);
+  } catch {
+    res.statusCode = 500;
+    res.setHeader("Content-Type", "text/plain; charset=utf-8");
+    res.end("Internal Server Error");
+  }
+  return true;
+}
+
 export function createGatewayHttpServer(opts: {
   canvasHost: CanvasHostHandler | null;
   clients: Set<GatewayWsClient>;
@@ -659,6 +705,10 @@ export function createGatewayHttpServer(opts: {
         {
           name: "slack",
           run: () => handleSlackHttpRequest(req, res),
+        },
+        {
+          name: "chat-images",
+          run: () => handleChatImageRequest(req, res, requestPath),
         },
       ];
       if (openResponsesEnabled) {
